@@ -23,7 +23,31 @@ jobs:
   whats-new-check:
     name: Check in-app what's new summaries
     runs-on: ubuntu-22.04
+    outputs:
+      tauri_key: ${{ steps.release_secrets.outputs.tauri_key }}
+      apple_certs: ${{ steps.release_secrets.outputs.apple_certs }}
     steps:
+      # fork 通常没有签名/公证 secrets：在根 job 探测一次，下游按结果降级——
+      # Windows/Linux 产出未签名安装包（无 updater 产物），macOS 链整体跳过；
+      # 官方仓库 secrets 齐全，行为与原来完全一致。
+      - name: Probe release secrets
+        id: release_secrets
+        shell: bash
+        env:
+          TAURI_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          if [ -n "$TAURI_KEY" ]; then
+            echo "tauri_key=set" >> "$GITHUB_OUTPUT"
+          else
+            echo "tauri_key=unset" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -n "$APPLE_CERT" ]; then
+            echo "apple_certs=set" >> "$GITHUB_OUTPUT"
+          else
+            echo "apple_certs=unset" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout
         uses: actions/checkout@v6
 
@@ -43,7 +67,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Setup pnpm
         env:
@@ -81,7 +105,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '24'
 
       # rust-toolchain.toml 是编译器版本的唯一来源：直接装它，免得先装 stable 再被 rustup 换掉
       - name: Read pinned Rust toolchain
@@ -160,7 +184,23 @@ jobs:
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
 
+      # fork 未配置 TAURI_SIGNING_PRIVATE_KEY 时降级：跳过签名准备并关闭 updater 产物，
+      # 只产出安装包（MSI/AppImage/deb/rpm 的生成本身不需要 minisign 密钥）。
+      - name: Probe Tauri signing secret
+        id: tauri_sign
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY is not configured; building unsigned installers without updater artifacts (fork mode)."
+          fi
+
       - name: Prepare Tauri signing key
+        if: steps.tauri_sign.outputs.signed == 'true'
         uses: ./.github/actions/prepare-tauri-signing-key
         with:
           private-key: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -171,26 +211,39 @@ jobs:
         shell: pwsh
         env:
           WINDOWS_RELEASE_ARCH: ${{ matrix.arch || 'x86_64' }}
+          TAURI_UNSIGNED: ${{ steps.tauri_sign.outputs.signed != 'true' }}
         run: |
           $ErrorActionPreference = 'Stop'
+          # fork 未签名模式：关闭 updater 产物（无 minisign 密钥时 bundler 无法生成 .sig）
+          $extraArgs = @()
+          if ($env:TAURI_UNSIGNED -eq 'true') {
+            $extraArgs += @('--config', '{"bundle":{"createUpdaterArtifacts":false},"plugins":{"updater":{"active":false}}}')
+          }
           # 只发布 MSI（和便携版 exe），不打用不上的 NSIS 安装包
           if ($env:WINDOWS_RELEASE_ARCH -eq 'arm64') {
-            pnpm tauri build --target aarch64-pc-windows-msvc --bundles msi
+            pnpm tauri build --target aarch64-pc-windows-msvc --bundles msi @extraArgs
           } else {
-            pnpm tauri build --bundles msi
+            pnpm tauri build --bundles msi @extraArgs
           }
 
       - name: Build Tauri App (Linux)
         if: runner.os == 'Linux'
         env:
           LINUXDEPLOY_EXCLUDED_LIBRARIES: "libwayland-client.so*"
-        run: pnpm tauri build --bundles appimage,deb,rpm
+        run: |
+          set -euo pipefail
+          EXTRA=()
+          if [ "${{ steps.tauri_sign.outputs.signed }}" != "true" ]; then
+            EXTRA=(--config '{"bundle":{"createUpdaterArtifacts":false},"plugins":{"updater":{"active":false}}}')
+          fi
+          pnpm tauri build --bundles appimage,deb,rpm "${EXTRA[@]}"
 
       - name: Prepare Windows Assets
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           WINDOWS_RELEASE_ARCH: ${{ matrix.arch || 'x86_64' }}
+          TAURI_UNSIGNED: ${{ steps.tauri_sign.outputs.signed != 'true' }}
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path release-assets | Out-Null
@@ -228,6 +281,8 @@ jobs:
             if (Test-Path $sigPath) {
               Copy-Item $sigPath (Join-Path release-assets ("$dest.sig"))
               Write-Host "Signature copied: $dest.sig"
+            } elseif ($env:TAURI_UNSIGNED -eq 'true') {
+              Write-Warning "Signature not found for $($msi.Name); continuing without updater signature (fork mode)."
             } else {
               throw "Signature not found for $($msi.Name)"
             }
@@ -276,25 +331,31 @@ jobs:
       - name: Prepare Linux Assets
         if: runner.os == 'Linux'
         shell: bash
+        env:
+          TAURI_SIGNED: ${{ steps.tauri_sign.outputs.signed }}
         run: |
           set -euxo pipefail
           mkdir -p release-assets
           # e.g., v3.5.0；手动干跑时是分支名，斜杠会被当成目录，换成 -
           VERSION="${GITHUB_REF_NAME//\//-}"
           ARCH="${{ matrix.arch || 'x86_64' }}"
+          # fork 未签名模式下 .sig 缺失只告警，不阻断安装包产出
           # Updater artifact: AppImage（含对应 .sig）
           APPIMAGE=$(find src-tauri/target/release/bundle -name "*.AppImage" | head -1 || true)
           if [ -z "$APPIMAGE" ]; then
             echo "❌ No AppImage found under target/release/bundle" >&2
             exit 1
           fi
-          if [ ! -f "$APPIMAGE.sig" ]; then
-            echo "❌ Updater signature not found: $APPIMAGE.sig" >&2
-            exit 1
-          fi
           NEW_APPIMAGE="CC-Switch-${VERSION}-Linux-${ARCH}.AppImage"
           cp "$APPIMAGE" "release-assets/$NEW_APPIMAGE"
-          cp "$APPIMAGE.sig" "release-assets/$NEW_APPIMAGE.sig"
+          if [ -f "$APPIMAGE.sig" ]; then
+            cp "$APPIMAGE.sig" "release-assets/$NEW_APPIMAGE.sig"
+          elif [ "$TAURI_SIGNED" = "true" ]; then
+            echo "❌ Updater signature not found: $APPIMAGE.sig" >&2
+            exit 1
+          else
+            echo "::warning::No updater signature for $NEW_APPIMAGE (fork mode)"
+          fi
           echo "AppImage copied: $NEW_APPIMAGE"
           # 额外上传 .deb（用于 Debian/Ubuntu 自动更新）
           DEB=$(find src-tauri/target/release/bundle -name "*.deb" | head -1 || true)
@@ -302,13 +363,16 @@ jobs:
             echo "❌ No .deb found under target/release/bundle" >&2
             exit 1
           fi
-          if [ ! -f "$DEB.sig" ]; then
-            echo "❌ Updater signature not found: $DEB.sig" >&2
-            exit 1
-          fi
           NEW_DEB="CC-Switch-${VERSION}-Linux-${ARCH}.deb"
           cp "$DEB" "release-assets/$NEW_DEB"
-          cp "$DEB.sig" "release-assets/$NEW_DEB.sig"
+          if [ -f "$DEB.sig" ]; then
+            cp "$DEB.sig" "release-assets/$NEW_DEB.sig"
+          elif [ "$TAURI_SIGNED" = "true" ]; then
+            echo "❌ Updater signature not found: $DEB.sig" >&2
+            exit 1
+          else
+            echo "::warning::No updater signature for $NEW_DEB (fork mode)"
+          fi
           echo "Deb package copied: $NEW_DEB"
           # 额外上传 .rpm（用于 Fedora/RHEL/openSUSE 等自动更新）
           RPM=$(find src-tauri/target/release/bundle -name "*.rpm" | head -1 || true)
@@ -316,13 +380,16 @@ jobs:
             echo "❌ No .rpm found under target/release/bundle" >&2
             exit 1
           fi
-          if [ ! -f "$RPM.sig" ]; then
-            echo "❌ Updater signature not found: $RPM.sig" >&2
-            exit 1
-          fi
           NEW_RPM="CC-Switch-${VERSION}-Linux-${ARCH}.rpm"
           cp "$RPM" "release-assets/$NEW_RPM"
-          cp "$RPM.sig" "release-assets/$NEW_RPM.sig"
+          if [ -f "$RPM.sig" ]; then
+            cp "$RPM.sig" "release-assets/$NEW_RPM.sig"
+          elif [ "$TAURI_SIGNED" = "true" ]; then
+            echo "❌ Updater signature not found: $RPM.sig" >&2
+            exit 1
+          else
+            echo "::warning::No updater signature for $NEW_RPM (fork mode)"
+          fi
           echo "RPM package copied: $NEW_RPM"
 
       - name: List prepared assets
@@ -356,6 +423,9 @@ jobs:
   macos-binary:
     name: Build macOS binary (${{ matrix.target }})
     needs: whats-new-check
+    # macOS 链依赖 Apple 开发者证书与公证凭据；fork 未配置时整体跳过
+    # （macos-release 依赖本 job，会随之跳过），官方仓库行为不变。
+    if: needs.whats-new-check.outputs.apple_certs == 'set'
     runs-on: macos-15
     environment: release
     strategy:
@@ -369,7 +439,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '24'
 
       # rust-toolchain.toml 是编译器版本的唯一来源：直接装它，免得先装 stable 再被 rustup 换掉
       - name: Read pinned Rust toolchain
@@ -426,7 +496,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '24'
 
       # rust-toolchain.toml 是编译器版本的唯一来源：直接装它，免得先装 stable 再被 rustup 换掉
       - name: Read pinned Rust toolchain
@@ -801,8 +871,12 @@ jobs:
     runs-on: ubuntu-22.04
     needs: [release, macos-release]
     # 只有推 tag 才发布。手动触发时也能选 tag 作为运行版本，单看 ref_type 会把干跑当成正式发布，
-    # 覆盖已发布 release 的正文和安装包
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    # 覆盖已发布 release 的正文和安装包。
+    # fork 无 Apple 证书时 macOS 链被跳过：放行 skipped，让 Windows/Linux 产物照常发布。
+    if: >-
+      github.event_name == 'push' && github.ref_type == 'tag' &&
+      needs.release.result == 'success' &&
+      (needs.macos-release.result == 'success' || needs.macos-release.result == 'skipped')
     permissions:
       contents: write
     steps:
@@ -827,6 +901,12 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          # fork 未签名构建没有任何 .sig：跳过 latest.json（无 updater 产物可指向），
+          # 安装包仍照常上传到 GitHub Release。
+          if ! compgen -G "release-assets/*.sig" > /dev/null; then
+            echo "::warning::No updater signatures found; skipping latest.json generation (fork mode)."
+            exit 0
+          fi
           VERSION="${TAG#v}"
           PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           base_url="https://github.com/$REPO/releases/download/$TAG"
