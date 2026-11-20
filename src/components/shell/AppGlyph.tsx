@@ -3,8 +3,12 @@ import type { AppId } from "@/lib/api";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { cn } from "@/lib/utils";
 
-/** 应用名：品牌名不翻译，四种语言都写原文。 */
-export const APP_DISPLAY_NAME: Record<AppId, string> = {
+/**
+ * 应用名：品牌名不翻译，四种语言都写原文。
+ * `zcode` 只存在于用量域（会话导入的用量行），不是配置域的 AppId，
+ * 所以这里的键集是 `AppId | "zcode"`。
+ */
+export const APP_DISPLAY_NAME: Record<AppId | "zcode", string> = {
   claude: "Claude Code",
   "claude-desktop": "Claude Desktop",
   codex: "Codex",
@@ -21,9 +25,12 @@ export const APP_DISPLAY_NAME: Record<AppId, string> = {
   omp: "Oh My Pi",
   copilot: "Copilot CLI",
   workbuddy: "WorkBuddy",
+  zcode: "ZCode",
 };
 
-const APP_ICON_NAME: Record<AppId, string> = {
+// zcode 没有专属图标资产，复用已有的 Z.ai（Zhipu）Logo，
+// 避免在 ProviderIcon 的 showFallback={false} 下渲染成空白
+const APP_ICON_NAME: Record<AppId | "zcode", string> = {
   claude: "claude",
   "claude-desktop": "claude",
   codex: "openai",
@@ -40,16 +47,17 @@ const APP_ICON_NAME: Record<AppId, string> = {
   omp: "omp",
   copilot: "githubcopilot",
   workbuddy: "workbuddy",
+  zcode: "zhipu",
 };
 
 // Claude Code 和 Claude Desktop 用同一个图标，靠右下角的小角标区分终端与桌面
-const APP_BADGE_ICON: Partial<Record<AppId, typeof Terminal>> = {
+const APP_BADGE_ICON: Partial<Record<AppId | "zcode", typeof Terminal>> = {
   claude: Terminal,
   "claude-desktop": Monitor,
 };
 
 interface AppGlyphProps {
-  app: AppId;
+  app: AppId | "zcode";
   /** 图标边长：侧栏 16，页头 20 */
   size?: number;
   /** 角标底色要和所在的行一致，否则看起来像缺了一块 */

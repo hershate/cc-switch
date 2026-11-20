@@ -411,6 +411,8 @@ describe("UsageDashboard", () => {
     expect(
       screen.queryByRole("button", { name: /Grok/ }),
     ).not.toBeInTheDocument();
+    // ZCode 只在用量域，没有应用页可见性开关（键缺失），恒显示
+    expect(screen.getByRole("button", { name: "ZCode" })).toBeInTheDocument();
   });
 
   const scopeTrigger = () =>

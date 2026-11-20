@@ -98,7 +98,8 @@ export function formatLogFullTime(createdAt: number): string {
   )}`;
 }
 
-export function isKnownAppId(appType: string): appType is AppId {
+/** zcode 只在用量域有用量行，同样认得；其余未知 app_type 原样显示。 */
+export function isKnownAppId(appType: string): appType is AppId | "zcode" {
   return appType in APP_DISPLAY_NAME;
 }
 
@@ -110,7 +111,7 @@ export function appDisplayName(appType: string): string {
  * 请求日志「应用」列用的短名：图标已经区分了品牌（Claude Code / Desktop 靠角标），
  * 列里只留最短能认出的名字，把宽度让给供应商列。全名在悬停提示里。
  */
-const APP_SHORT_NAME: Record<AppId, string> = {
+const APP_SHORT_NAME: Record<AppId | "zcode", string> = {
   claude: "Claude",
   "claude-desktop": "Desktop",
   codex: "Codex",
@@ -127,6 +128,7 @@ const APP_SHORT_NAME: Record<AppId, string> = {
   omp: "omp",
   copilot: "Copilot",
   workbuddy: "WorkBuddy",
+  zcode: "ZCode",
 };
 
 export function appShortName(appType: string): string {

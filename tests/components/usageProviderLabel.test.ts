@@ -23,6 +23,10 @@ describe("getUsageProviderLabel", () => {
     expect(getUsageProviderLabel("Oh My Pi (Session)", t).label).toBe(
       "usage.sessionProvider.label:Oh My Pi",
     );
+    // zcode 只在用量域（会话导入），品牌名同样走插值不翻译
+    expect(getUsageProviderLabel("ZCode (Session)", t).label).toBe(
+      "usage.sessionProvider.label:ZCode",
+    );
   });
 
   it("translates every placeholder name the backend can return", () => {

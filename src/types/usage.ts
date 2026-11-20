@@ -194,9 +194,9 @@ export interface UsageRangeSelection {
  * only ever show a partial number and mislead users into reading it as the
  * Desktop's full usage. The backend collapses `claude-desktop → claude` in
  * every dashboard query (see `folded_app_type_sql`).
- * `opencode`, `pi` and `omp` have no proxy handler; their usage reaches this
- * dashboard through session importers. `openclaw` / `hermes` appear only as
- * managed apps elsewhere.
+ * `opencode`, `pi`, `omp` and `zcode` have no proxy handler; their usage
+ * reaches this dashboard through session importers. `openclaw` / `hermes`
+ * appear only as managed apps elsewhere.
  */
 export type AppType =
   | "claude"
@@ -211,7 +211,8 @@ export type AppType =
   | "dsh"
   | "agy"
   | "copilot"
-  | "workbuddy";
+  | "workbuddy"
+  | "zcode";
 
 export type AppTypeFilter = "all" | AppType;
 
@@ -229,6 +230,7 @@ export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = [
   "agy",
   "copilot",
   "workbuddy",
+  "zcode",
 ];
 
 /**
@@ -247,6 +249,7 @@ export const CACHE_INCLUSIVE_APP_TYPES: ReadonlySet<string> = new Set([
   "codex",
   "gemini",
   "grokbuild",
+  "zcode",
 ]);
 
 // Pi and Oh My Pi sessions can mix Anthropic and OpenAI APIs, but the dashboard

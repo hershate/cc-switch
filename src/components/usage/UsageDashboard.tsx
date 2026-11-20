@@ -564,11 +564,17 @@ export function UsageDashboard({
   // 当前选中的即使被隐藏也留着，免得筛选状态无处可见
   const { data: settings } = useSettingsQuery();
   const filterApps = useMemo(() => {
-    const visible = { ...DEFAULT_VISIBLE_APPS, ...settings?.visibleApps };
+    // zcode 只在用量域存在，没有应用页的可见性开关（键缺失＝undefined）；
+    // 用 !== false 判定，无键即显示。现有 16 个 AppId 键由 DEFAULT_VISIBLE_APPS
+    // 铺满、恒存在，判定语义不变。
+    const visible: Record<string, boolean | undefined> = {
+      ...DEFAULT_VISIBLE_APPS,
+      ...settings?.visibleApps,
+    };
     return KNOWN_APP_TYPES.filter(
       (app) =>
-        visible[app] ||
-        (app === "claude" && visible["claude-desktop"]) ||
+        visible[app] !== false ||
+        (app === "claude" && visible["claude-desktop"] !== false) ||
         app === appType,
     );
   }, [settings?.visibleApps, appType]);
