@@ -736,7 +736,7 @@ fn run_sync(on_status: &dyn Fn(IndexStatus)) {
             changed += 1;
         }
         status.processed += 1;
-        if status.processed % PROGRESS_EVERY == 0 {
+        if status.processed.is_multiple_of(PROGRESS_EVERY) {
             set_status(status, on_status);
         }
     }

@@ -6,7 +6,9 @@ authors = ["Jason Young"]
 license = "MIT"
 repository = "https://github.com/farion1231/cc-switch"
 edition = "2021"
-rust-version = "1.85.0"
+# 实际编译一律走 rust-toolchain.toml（1.99.1，CI 的唯一版本来源）；
+# 1.95.0 是代码所用 API 的下限（Atomic::try_update 等）。
+rust-version = "1.95.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

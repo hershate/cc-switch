@@ -397,7 +397,7 @@ async fn handle_messages_for_app(
         Ok(result) => result,
         Err(mut err) => {
             if let Some(provider) = err.provider.take() {
-                ctx.provider = provider;
+                ctx.provider = *provider;
             }
             ctx.outbound_model = err.outbound_model.take();
             log_forward_error(&state, &ctx, is_stream, &err.error).await;
@@ -1050,7 +1050,7 @@ pub async fn handle_chat_completions(
         Ok(result) => result,
         Err(mut err) => {
             if let Some(provider) = err.provider.take() {
-                ctx.provider = provider;
+                ctx.provider = *provider;
             }
             ctx.outbound_model = err.outbound_model.take();
             log_forward_error(&state, &ctx, is_stream, &err.error).await;
@@ -1206,7 +1206,7 @@ async fn handle_responses_for_app(
         Ok(result) => result,
         Err(mut err) => {
             if let Some(provider) = err.provider.take() {
-                ctx.provider = provider;
+                ctx.provider = *provider;
             }
             ctx.outbound_model = err.outbound_model.take();
             log_forward_error(&state, &ctx, is_stream, &err.error).await;
@@ -1466,7 +1466,7 @@ async fn handle_codex_standalone_passthrough(
         Ok(result) => result,
         Err(mut err) => {
             if let Some(provider) = err.provider.take() {
-                ctx.provider = provider;
+                ctx.provider = *provider;
             }
             ctx.outbound_model = err.outbound_model.take();
             log_forward_error(&state, &ctx, false, &err.error).await;
@@ -2604,7 +2604,7 @@ pub async fn handle_gemini(
         Ok(result) => result,
         Err(mut err) => {
             if let Some(provider) = err.provider.take() {
-                ctx.provider = provider;
+                ctx.provider = *provider;
             }
             ctx.outbound_model = err.outbound_model.take();
             log_forward_error(&state, &ctx, is_stream, &err.error).await;

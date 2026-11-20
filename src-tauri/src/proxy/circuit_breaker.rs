@@ -397,7 +397,7 @@ impl CircuitBreaker {
     fn release_half_open_slot(&self, round: Option<u32>) {
         let _ = self
             .half_open_slots
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |slots| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |slots| {
                 let (current_round, count) = split_half_open_slots(slots);
                 if count == 0 || round.is_some_and(|round| round != current_round) {
                     None
@@ -427,7 +427,7 @@ impl CircuitBreaker {
         // 进入新一轮：轮次加一、名额计数清零（上一轮没还的名额就此作废）
         let _ = self
             .half_open_slots
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |slots| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |slots| {
                 let (round, _) = split_half_open_slots(slots);
                 Some(u64::from(round.wrapping_add(1)) << 32)
             });

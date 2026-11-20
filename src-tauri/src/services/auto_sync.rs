@@ -67,12 +67,11 @@ impl<B: AutoSyncBackend> SuppressionGuard<B> {
 
 impl<B: AutoSyncBackend> Drop for SuppressionGuard<B> {
     fn drop(&mut self) {
-        let _ =
-            B::state()
-                .suppress_depth
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
-                    Some(value.saturating_sub(1))
-                });
+        let _ = B::state()
+            .suppress_depth
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
+                Some(value.saturating_sub(1))
+            });
     }
 }
 

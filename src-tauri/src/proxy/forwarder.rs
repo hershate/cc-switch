@@ -100,7 +100,9 @@ pub struct ForwardResult {
 
 pub struct ForwardError {
     pub error: ProxyError,
-    pub provider: Option<Provider>,
+    /// Box 装箱：`Provider`（含 `ProviderMeta`）上千字节，直接内联会把
+    /// `Result<_, ForwardError>` 的 Err 变体撑到 clippy `result_large_err` 之上。
+    pub provider: Option<Box<Provider>>,
     /// 最后一次尝试发往上游的模型名（映射之后）。错误行记这个，不记客户端别名：
     /// 路由下 Desktop 的 claude-haiku-* 实际发的是映射后的模型，记别名会被当成调错了模型。
     pub outbound_model: Option<String>,
@@ -658,7 +660,7 @@ impl RequestForwarder {
         }
         ForwardError {
             error,
-            provider: Some(provider.clone()),
+            provider: Some(Box::new(provider.clone())),
             outbound_model: self.last_outbound_model(),
         }
     }
@@ -742,7 +744,7 @@ impl RequestForwarder {
             self.record_failed_request(error.to_string()).await;
             return Err(ForwardError {
                 error,
-                provider: providers.first().cloned(),
+                provider: providers.first().cloned().map(Box::new),
                 outbound_model: None,
             });
         }
@@ -1321,7 +1323,7 @@ impl RequestForwarder {
 
         Err(ForwardError {
             error: last_error.unwrap_or(ProxyError::MaxRetriesExceeded),
-            provider: last_provider,
+            provider: last_provider.map(Box::new),
             outbound_model: self.last_outbound_model(),
         })
     }
