@@ -42,6 +42,12 @@ vi.mock("@/components/providers/forms/XaiOAuthSection", () => ({
   XaiOAuthSection: () => <div />,
 }));
 
+// 授权中心在 macOS / Windows 上还会挂 Antigravity 分组（canSwitchAgyAccount），
+// 它要用 react-query；本文件只测 Codex 配额，跟其他分组一样 mock 掉。
+vi.mock("@/components/providers/forms/AgyOAuthSection", () => ({
+  AgyOAuthSection: () => <div />,
+}));
+
 vi.mock("@/components/providers/KimiAccountLogin", () => ({
   KimiAccountLogin: () => <div />,
 }));

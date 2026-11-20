@@ -23,10 +23,13 @@ vi.mock("@/components/AgyAccountQuotaFooter", () => ({
     <span data-testid="agy-account-quota">{accountId}</span>
   ),
 }));
-const platform = vi.hoisted(() => ({ mac: true }));
+const platform = vi.hoisted(() => ({ mac: true, windows: false }));
 vi.mock("@/lib/platform", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/platform")>()),
   isMac: () => platform.mac,
+  // canSwitchAgyAccount() = isMac() || isWindows()：不 mock 的话在 Windows 上
+  // 跑永远为 true，"cannot be switched" 用例就名不副实了。
+  isWindows: () => platform.windows,
 }));
 vi.mock("@/lib/query/failover", () => ({
   useProviderHealth: () => ({ data: undefined }),
