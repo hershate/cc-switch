@@ -1,6 +1,6 @@
 # cc-switch 项目要点总览（note 索引）
 
-> 本文件是 `note/` 目录总入口：汇总两次工作流的全部要点（全库代码分析 + 本机构建环境配置），并索引详细文档。最后更新：2026-11-20，对应版本 v4.0.35（commit `9d66f783`）。
+> 本文件是 `note/` 目录总入口：汇总三次工作流的全部要点（全库代码分析 + 本机构建环境配置 + ZCode/Kimi 用量接入），并索引详细文档。最后更新：2026-11-21，对应版本 v4.0.35。
 
 ## 1. 文档索引
 
@@ -8,6 +8,7 @@
 flowchart TD
     N["note 总入口 README.md"] --> R["report/codebase-analysis<br/>全库分析 7 份报告"]
     N --> D["dev/environment-setup.md<br/>构建环境配置与验证"]
+    N --> D2["dev/zcode-kimi-usage-notes.md<br/>ZCode 用量接入与 Kimi 修复"]
     R --> R1["index.md 报告索引"]
     R --> R2["01 架构"]
     R --> R3["02 数据结构"]
@@ -27,6 +28,7 @@ flowchart TD
 | [05-workflows.md](report/codebase-analysis/05-workflows.md) | 供应商切换、代理接管、同步、13 CLI 用量采集、深链接等 13 个业务流程 | 同上 |
 | [06-engineering.md](report/codebase-analysis/06-engineering.md) | 测试体系、8 个 CI workflow、构建配置、发布与 R2 分发 | 同上 |
 | [dev/environment-setup.md](dev/environment-setup.md) | 本机工具链（F 盘）、镜像、版本锁定变更、fork CI 降级、验证结果 | 2026-11-19 环境配置 |
+| [dev/zcode-kimi-usage-notes.md](dev/zcode-kimi-usage-notes.md) | ZCode 会话格式实测、用量导入实现与前端展示、Kimi usage.record 按需降级修复、门禁与遗留事项 | 2026-11-20/21 用量接入 |
 
 ## 2. 项目速览
 
@@ -78,7 +80,7 @@ cargo nextest run --profile ci        # 后端（或 cargo test）
 - `sync-r2.yml` 天然兼容 fork（缺 R2 secrets 优雅跳过，仅官方仓库强制）。
 - fork 推 tag 发布前必须存在 `src/whats-new/<版本>.json`（whats-new-check 强制）。
 - 外部 PR 改 `SCHEMA_VERSION` 会被 schema-version.yml 自动关闭；改表先 `SCHEMA_VERSION += 1` 再在 `schema.rs` match 加迁移。
-- 已知非阻断警告：Rust 1.99.1 下 3 处 `fetch_update`→`try_update` 弃用警告（`services/auto_sync.rs:73` 等）。
+- 原 Rust 1.99.1 下 3 处 `fetch_update` 弃用警告已随 `76f489f3` 改用 `try_update` 消除（见 `dev/environment-setup.md` §4 的历史记录）。
 
 ## 7. 提交记录
 
@@ -88,3 +90,9 @@ cargo nextest run --profile ci        # 后端（或 cargo test）
 | `68225faa` | 工具链对齐本地（rust-toolchain 1.99.1、.node-version 24.22.1、6 处 workflow node 24） |
 | `283c7f64` | release.yml fork 降级改造 |
 | `9d66f783` | 环境配置记录（note/dev/environment-setup.md） |
+| `7231f656` | ZCode 会话用量导入器（后端接入 + cache-inclusive 计价白名单） |
+| `1dd72211` | Kimi Code 用量导入 usage.record 按需降级修复 |
+| `feab86b4` | 用量仪表盘 ZCode 展示（前端用量域，未动配置域） |
+| `76f489f3` | clippy 与弃用警告清零（rust 1.99.1 门禁对齐） |
+| `1c868d98` | Windows 符号链接/系统代理测试夹具加固 |
+| `4b9217a6` | vitest minWorkers 固定与平台组件 mock |
