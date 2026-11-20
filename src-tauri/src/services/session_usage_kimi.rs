@@ -96,6 +96,7 @@ fn sync_file(
         RequestIndex::for_agent(agent)
     };
     let mut pending = Vec::new();
+    let mut records = Vec::new();
     let mut result = SessionSyncResult {
         files_scanned: 1,
         ..Default::default()
@@ -117,6 +118,13 @@ fn sync_file(
             continue;
         };
         requests.observe(&record);
+        // Newer protocol variants emit standalone `usage.record` events alongside (or
+        // instead of) the legacy paths below. Collect them separately; a wire is only
+        // ever imported from one source (see the fallback before the import loop).
+        if record["type"].as_str() == Some("usage.record") {
+            collect_usage_record(&record, agent, &mut records);
+            continue;
+        }
         let (meta, usage) = if main {
             if !matches!(
                 record["type"].as_str(),
@@ -189,7 +197,13 @@ fn sync_file(
     }
     let mut conn = lock_conn!(db.conn);
     let tx = conn.transaction()?;
-    for (request, meta, mut usage, created) in pending {
+    // Fallback only, never in addition: wires that expose usage through either legacy
+    // path above also emit `usage.record` events for the same model calls, so importing
+    // the records whenever pending is non-empty would count every request twice. The
+    // records carry no message join and no native timing, so they are imported only
+    // for protocol variants where neither legacy path yields anything.
+    let rows = if pending.is_empty() { records } else { pending };
+    for (request, meta, mut usage, created) in rows {
         let model = requests.model(&meta).unwrap_or("unknown");
         usage.model = Some(model.into());
         let info = requests.get(&meta);
@@ -220,6 +234,55 @@ fn sync_file(
     update_sync_state_on_conn(&tx, key, modified, bytes)?;
     tx.commit()?;
     Ok(result)
+}
+
+/// Standalone `usage.record` events (turn- or session-scoped) carry the same four token
+/// counters as the legacy paths but no message join, so they are kept as a per-wire
+/// fallback for protocol variants where neither legacy path fires.
+fn collect_usage_record(
+    record: &Value,
+    agent: &str,
+    records: &mut Vec<(String, Value, TokenUsage, i64)>,
+) {
+    let Some(created) = timestamp_ms(&record["time"]) else {
+        return;
+    };
+    let usage = &record["usage"];
+    let tokens = |field| usage[field].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32;
+    let counted = TokenUsage {
+        input_tokens: tokens("inputOther"),
+        output_tokens: tokens("output"),
+        cache_read_tokens: tokens("inputCacheRead"),
+        cache_creation_tokens: tokens("inputCacheCreation"),
+        cache_creation_1h_tokens: 0,
+        model: None,
+        message_id: None,
+    };
+    if counted.input_tokens == 0
+        && counted.output_tokens == 0
+        && counted.cache_read_tokens == 0
+        && counted.cache_creation_tokens == 0
+    {
+        return;
+    }
+    let agent_id = record["agentId"].as_str().unwrap_or(agent);
+    // The `kimi:record:` namespace never meets the legacy `kimi:{provider}:{messageId}`
+    // ids, so fallback imports cannot collide with or re-import legacy rows. Records
+    // sharing agent and millisecond collapse onto one id; the receipt's INSERT OR
+    // IGNORE keeps only the first, so same-millisecond duplicates are dropped safely.
+    let request = format!("kimi:record:{agent_id}:{created}");
+    // Strip the provider prefix (`kimi-code/k3.1-pro` → `k3.1-pro`) so the bare alias
+    // matches model_pricing.
+    let model = record["model"]
+        .as_str()
+        .and_then(|name| name.rsplit('/').next())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned);
+    // The synthesized meta keeps the shared import loop: the messageId never matches a
+    // step in the request index, and the model falls through to the alias above.
+    let meta = serde_json::json!({"messageId": format!("{agent_id}:{created}"), "model": {"model": model}});
+    records.push((request, meta, counted, created));
 }
 
 /// Kimi commits a whole turn's messages at once, so a committed record's own time is the
@@ -702,5 +765,158 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cursor, 0);
+    }
+
+    #[test]
+    fn kimi_usage_falls_back_to_standalone_usage_records() {
+        let db = Database::memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wire.jsonl");
+        // Protocol-variant wires carry usage only as standalone records: model aliases
+        // keep their provider prefix and times can be RFC3339 strings.
+        let records = vec![
+            json!({"type":"usage.record","time":1_792_847_003_888i64,"agentId":"main","model":"kimi-code/k3.1-pro","usage":{"inputOther":2037,"output":562,"inputCacheRead":19456,"inputCacheCreation":0},"usageScope":"turn"}),
+            json!({"type":"usage.record","time":"2026-11-20T14:59:15.079Z","agentId":"agent-0","model":"k3.1-flash","usage":{"inputOther":10,"output":20,"inputCacheRead":30,"inputCacheCreation":40},"usageScope":"turn"}),
+            // Zero-token records and records without a parsable time are dropped.
+            json!({"type":"usage.record","time":1_792_847_005_000i64,"agentId":"main","model":"kimi-code/k3.1-pro","usage":{"inputOther":0,"output":0,"inputCacheRead":0,"inputCacheCreation":0},"usageScope":"turn"}),
+            json!({"type":"usage.record","agentId":"main","model":"kimi-code/k3.1-pro","usage":{"inputOther":1,"output":2,"inputCacheRead":3,"inputCacheCreation":4},"usageScope":"turn"}),
+        ];
+        write_records(&path, &records);
+        assert_eq!(
+            sync_file(&db, &path, "main", "session", "file", 1)
+                .unwrap()
+                .imported,
+            2
+        );
+        {
+            let conn = db.conn.lock().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT request_id, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, latency_ms, first_token_ms, created_at FROM proxy_request_logs ORDER BY request_id")
+                .unwrap();
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, Option<i64>>(7)?,
+                        row.get::<_, i64>(8)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(
+                rows,
+                vec![
+                    (
+                        "kimi:record:agent-0:1795186755079".into(),
+                        "k3.1-flash".into(),
+                        10,
+                        20,
+                        30,
+                        40,
+                        0,
+                        None,
+                        1_795_186_755
+                    ),
+                    (
+                        "kimi:record:main:1792847003888".into(),
+                        "k3.1-pro".into(),
+                        2037,
+                        562,
+                        19456,
+                        0,
+                        0,
+                        None,
+                        1_792_847_003
+                    ),
+                ]
+            );
+        }
+        // A rescan under a fresh key finds both receipts; nothing is counted twice.
+        assert_eq!(
+            sync_file(&db, &path, "main", "session", "rescan", 2)
+                .unwrap()
+                .imported,
+            0
+        );
+        let receipts: i64 = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM session_usage_dedup", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(receipts, 2);
+    }
+
+    #[test]
+    fn kimi_usage_collapses_same_millisecond_records_onto_one_receipt() {
+        let db = Database::memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wire.jsonl");
+        let usage = json!({"inputOther":10,"output":20,"inputCacheRead":30,"inputCacheCreation":0});
+        let records = vec![
+            json!({"type":"usage.record","time":1_792_847_003_888i64,"agentId":"agent-0","model":"kimi-code/k3.1-pro","usage":usage,"usageScope":"turn"}),
+            json!({"type":"usage.record","time":1_792_847_003_888i64,"agentId":"agent-0","model":"kimi-code/k3.1-pro","usage":{"inputOther":1,"output":2,"inputCacheRead":3,"inputCacheCreation":0},"usageScope":"turn"}),
+        ];
+        write_records(&path, &records);
+        let result = sync_file(&db, &path, "agent-0", "session", "file", 1).unwrap();
+        assert_eq!((result.imported, result.skipped), (1, 1));
+        let rows: i64 = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    #[test]
+    fn kimi_usage_keeps_legacy_imports_when_records_cover_the_same_calls() {
+        let db = Database::memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wire.jsonl");
+        // The legacy paths still work here, so the standalone record for the same call
+        // must not be imported on top of them.
+        let mut records = request("one", "model-one", 1_700_000_000_000, 1_000, 2_000, 100);
+        records.insert(
+            3,
+            json!({"type":"usage.record","time":1_700_000_003_000i64,"agentId":"main","model":"kimi-code/k3.1-pro","usage":{"inputOther":10,"output":100,"inputCacheRead":30,"inputCacheCreation":0},"usageScope":"turn"}),
+        );
+        write_records(&path, &records);
+        assert_eq!(
+            sync_file(&db, &path, "main", "session", "file", 1)
+                .unwrap()
+                .imported,
+            1
+        );
+        let conn = db.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT request_id, model, output_tokens FROM proxy_request_logs")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![("kimi:agent-loop:one".into(), "model-one".into(), 100)]
+        );
     }
 }

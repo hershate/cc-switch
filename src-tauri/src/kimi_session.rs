@@ -1,5 +1,6 @@
 //! Request metadata shared by Kimi's session reader and usage importer.
 use crate::services::session_usage::estimated_latency_ms;
+use crate::session_manager::providers::utils::parse_timestamp_to_ms;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -35,11 +36,21 @@ pub(crate) struct RequestIndex {
 }
 
 pub(crate) fn timestamp_ms(value: &Value) -> Option<i64> {
-    let time = value
+    if let Some(time) = value
         .as_f64()
-        .filter(|time| time.is_finite() && *time > 0.0)?;
-    let millis = if time < 1e12 { time * 1000.0 } else { time };
-    (millis < i64::MAX as f64).then_some(millis as i64)
+        .filter(|time| time.is_finite() && *time > 0.0)
+    {
+        let millis = if time < 1e12 { time * 1000.0 } else { time };
+        if millis < i64::MAX as f64 {
+            return Some(millis as i64);
+        }
+    }
+    // Newer protocol variants stamp some events with RFC3339 strings instead of
+    // epoch milliseconds; reuse the session providers' timestamp parser for those.
+    value
+        .as_str()
+        .and_then(|raw| parse_timestamp_to_ms(&Value::String(raw.to_owned())))
+        .filter(|millis| *millis > 0)
 }
 
 fn model_name(value: &Value) -> Option<&str> {
@@ -179,6 +190,25 @@ mod tests {
 
     fn loop_event(time: i64, event: Value) -> Value {
         json!({"type":"context.append_loop_event","time":time,"event":event})
+    }
+
+    #[test]
+    fn kimi_timestamps_accept_epoch_numbers_and_rfc3339_strings() {
+        assert_eq!(
+            timestamp_ms(&json!(1_700_000_000_000_i64)),
+            Some(1_700_000_000_000)
+        );
+        assert_eq!(
+            timestamp_ms(&json!(1_700_000_000.5)),
+            Some(1_700_000_000_500)
+        );
+        assert_eq!(
+            timestamp_ms(&json!("2026-11-20T14:59:15.079Z")),
+            Some(1_795_186_755_079)
+        );
+        assert_eq!(timestamp_ms(&json!("not-a-timestamp")), None);
+        assert_eq!(timestamp_ms(&json!("0")), None);
+        assert_eq!(timestamp_ms(&json!(null)), None);
     }
 
     fn start(index: &mut RequestIndex) {
