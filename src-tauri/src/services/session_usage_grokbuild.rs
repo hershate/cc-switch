@@ -1659,7 +1659,9 @@ mod tests {
         #[cfg(unix)]
         let linked = std::os::unix::fs::symlink(&enc, sub.join("cycle"));
         #[cfg(windows)]
-        let linked = std::os::windows::fs::symlink_dir(&enc, sub.join("cycle"));
+        // 普通权限建不了目录符号链接（os error 1314），退回 junction——std 同样把
+        // junction 报告为 symlink，collect_files_named 的跳过逻辑不变。
+        let linked = crate::agy_config::create_dir_link(&enc, &sub.join("cycle"));
         if let Err(err) = linked {
             // Windows 在 \\wsl.localhost 上建不了符号链接（Incorrect function），夹具无从构造
             assert!(crate::config::is_wsl_path(temp.path()), "symlink: {err}");

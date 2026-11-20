@@ -6850,7 +6850,9 @@ model_catalog_json = "cc-switch-model-catalog.json"
         #[cfg(unix)]
         let linked = std::os::unix::fs::symlink(&outside_dir, base_dir.join("link"));
         #[cfg(windows)]
-        let linked = std::os::windows::fs::symlink_dir(&outside_dir, base_dir.join("link"));
+        // 普通权限建不了目录符号链接（os error 1314），退回 junction——同样是指向
+        // 目录外的重解析点，canonicalize 会解析，越界语义不变。
+        let linked = crate::agy_config::create_dir_link(&outside_dir, &base_dir.join("link"));
         if let Err(err) = linked {
             // Windows 在 \\wsl.localhost 上建不了符号链接（Incorrect function），夹具无从构造
             assert!(crate::config::is_wsl_path(temp.path()), "symlink: {err}");

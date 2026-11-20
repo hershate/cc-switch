@@ -22,7 +22,28 @@ fn symlink_dir(src: &std::path::Path, dest: &std::path::Path) {
 
 #[cfg(windows)]
 fn symlink_dir(src: &std::path::Path, dest: &std::path::Path) {
-    std::os::windows::fs::symlink_dir(src, dest).expect("create symlink");
+    // 普通权限建不了目录符号链接（os error 1314），退回 junction（mklink /J）：
+    // 同为重解析点，is_symlink() 为 true、remove_path 走 remove_dir 同一条路径，
+    // SSOT 清理语义不变。panic 会毒化 test_mutex 连坐别的测试，务必建得出来。
+    if std::os::windows::fs::symlink_dir(src, dest).is_ok() {
+        return;
+    }
+    let status = std::process::Command::new("cmd")
+        .arg("/C")
+        .arg("mklink")
+        .arg("/J")
+        .arg(dest)
+        .arg(src)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("spawn cmd for junction");
+    assert!(
+        status.success(),
+        "create symlink/junction: {} -> {}",
+        src.display(),
+        dest.display()
+    );
 }
 
 #[test]

@@ -244,7 +244,12 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let error = reqwest::Client::new()
+        // no_proxy：系统代理开着时（Windows Internet Settings / 环境变量），
+        // 请求会经代理转成 502 响应而不是连接被拒，测试意图就丢了。
+        let error = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("build client")
             .get(format!(
                 "http://127.0.0.1:{port}/v1/responses?key=secret-token"
             ))
