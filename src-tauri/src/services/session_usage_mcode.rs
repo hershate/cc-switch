@@ -10,7 +10,6 @@ use crate::services::{
 use crate::session_manager::providers::mcode;
 use rusqlite::{params, OptionalExtension};
 use rust_decimal::Decimal;
-use std::collections::HashMap;
 
 pub fn sync_mcode_usage(db: &Database) -> Result<SessionSyncResult, AppError> {
     if !mcode::database_path().exists() {
@@ -34,39 +33,71 @@ fn sync_from_database(
         [&key],
         |row| row.get::<_, i64>(0),
     )?;
-    let mut query = source.prepare(
-        "SELECT id, session_id, model, ts, input_tokens,
-                output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, cost_usd
-         FROM local_runtime_token_usage WHERE id > ?1 ORDER BY id",
+    // MCode rebuilds its database from scratch on some upgrades, restarting ids at 1.
+    // A watermark above the current max id would then skip the rebuilt rows forever
+    // (pruning only ever removes low ids, so a watermark past the table means rebuild).
+    // Rescan from the start; request_id dedup keeps any surviving rows single-counted.
+    let max_id: i64 = source.query_row(
+        "SELECT COALESCE(MAX(id), 0) FROM local_runtime_token_usage",
+        [],
+        |row| row.get(0),
     )?;
+    if cursor > max_id {
+        cursor = 0;
+        tx.execute(
+            "DELETE FROM session_log_sync WHERE file_path = ?1",
+            [format!("{key}#timing")],
+        )?;
+    }
+    let mut query = source
+        .prepare(
+            "SELECT id, session_id, turn_id, model, ts, input_tokens,
+                    output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, cost_usd
+             FROM local_runtime_token_usage WHERE id > ?1 ORDER BY id",
+        )
+        .or_else(|_| {
+            // Older schemas carry no turn_id column; models then join per session only.
+            source.prepare(
+                "SELECT id, session_id, NULL, model, ts, input_tokens,
+                        output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, cost_usd
+                 FROM local_runtime_token_usage WHERE id > ?1 ORDER BY id",
+            )
+        })?;
     let mut history = HistoryModels::prepare(source);
     let mut rows = query.query([cursor])?;
     result.files_scanned = 1;
     while let Some(row) = rows.next()? {
         let id: i64 = row.get(0)?;
         let session_id: String = row.get(1)?;
-        let ts: i64 = row.get(3)?;
-        let native_model: Option<String> = row.get(2)?;
+        let turn_id: Option<String> = row.get(2)?;
+        let ts: i64 = row.get(4)?;
+        let native_model: Option<String> = row.get(3)?;
         let model = match native_model.as_deref() {
             Some(native) => native
                 .split_once('/')
                 .map_or(native, |(_, model)| model)
                 .to_string(),
             None => history
-                .lookup(&session_id, ts)
+                .lookup(
+                    &session_id,
+                    turn_id.as_deref(),
+                    ts,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                )
                 .unwrap_or_else(|| "unknown".into()),
         };
         let model = model.as_str();
         let usage = TokenUsage {
-            input_tokens: row.get(4)?,
-            output_tokens: row.get::<_, u32>(5)?.saturating_add(row.get(6)?),
-            cache_read_tokens: row.get(7)?,
-            cache_creation_tokens: row.get(8)?,
+            input_tokens: row.get(5)?,
+            output_tokens: row.get::<_, u32>(6)?.saturating_add(row.get(7)?),
+            cache_read_tokens: row.get(8)?,
+            cache_creation_tokens: row.get(9)?,
             cache_creation_1h_tokens: 0,
             model: Some(model.into()),
             message_id: None,
         };
-        let native_cost: Option<f64> = row.get(9)?;
+        let native_cost: Option<f64> = row.get(10)?;
         let cost = match native_cost {
             Some(cost) if cost.is_finite() && cost >= 0.0 => cost.to_string(),
             _ => {
@@ -209,15 +240,14 @@ fn timing_of(request: Option<f64>, decode: Option<f64>) -> Option<(i64, Option<i
     Some((request.round() as i64, first_token))
 }
 
-/// MCode 只在本轮带 executionModel 时才写用量行的 model 列，缺了就是 NULL。用量行的 ts
-/// 取自产生它的那条 assistant 消息的 timestamp，而 pi 历史里的消息自带 model，按
-/// （会话, 时间戳）回查同一条消息。新版历史存在 pi_history_rows：MCode 写行时把消息的
-/// timestamp / role 抄进 created_at_ms / role 列，按列匹配，只解析命中的那条。旧版整段
-/// 存在 pi_history_json，每个会话只解析一次。哪张表不存在就跳过哪张。
+/// MCode 只在本轮带 executionModel 时才写用量行的 model 列，缺了就是 NULL。产生用量行的
+/// 那条 assistant 消息行落盘比用量行的 ts 晚数秒（精确相等在本机 0/618 命中），按
+/// [`fill_timings`] 已验证的键回查同一条消息：（会话, 轮次, created_at_ms ≥ ts, 输入 /
+/// 输出 token，输出取原始列、不加推理）。现行 MCode 的消息 data_json 不写 `$.model`，历史
+/// 行因此不可恢复、保持 unknown；一旦新版本开始写模型，这个 join 会直接取到。表不存在时
+/// 什么都不做。
 struct HistoryModels<'a> {
     rows: Option<rusqlite::Statement<'a>>,
-    legacy: Option<rusqlite::Statement<'a>>,
-    legacy_by_session: HashMap<String, HashMap<i64, String>>,
 }
 
 impl<'a> HistoryModels<'a> {
@@ -225,59 +255,44 @@ impl<'a> HistoryModels<'a> {
         Self {
             rows: source
                 .prepare(
-                    "SELECT json_extract(data_json, '$.model') FROM local_runtime_pi_history_rows
-                     WHERE session_id = ?1 AND created_at_ms = ?2 AND role = 'assistant'",
+                    "SELECT json_extract(data_json, '$.model')
+                     FROM local_runtime_message_rows
+                     WHERE session_id = ?1 AND role = 'assistant'
+                       AND (?2 IS NULL OR turn_id = ?2)
+                       AND created_at_ms >= ?3
+                       AND json_extract(data_json, '$.usage.input_tokens') = ?4
+                       AND json_extract(data_json, '$.usage.output_tokens') = ?5
+                     ORDER BY created_at_ms LIMIT 1",
                 )
                 .ok(),
-            legacy: source
-                .prepare(
-                    "SELECT json_extract(message.value, '$.timestamp'),
-                            json_extract(message.value, '$.model')
-                     FROM local_runtime_messages, json_each(pi_history_json) AS message
-                     WHERE session_id = ?1 AND json_extract(message.value, '$.role') = 'assistant'",
-                )
-                .ok(),
-            legacy_by_session: HashMap::new(),
         }
     }
 
-    fn lookup(&mut self, session_id: &str, ts: i64) -> Option<String> {
-        self.lookup_rows(session_id, ts)
-            .or_else(|| self.lookup_legacy(session_id, ts))
-    }
-
-    fn lookup_rows(&mut self, session_id: &str, ts: i64) -> Option<String> {
-        let mut rows = self.rows.as_mut()?.query(params![session_id, ts]).ok()?;
+    fn lookup(
+        &mut self,
+        session_id: &str,
+        turn_id: Option<&str>,
+        ts: i64,
+        input_tokens: i64,
+        output_tokens: i64,
+    ) -> Option<String> {
+        let mut rows = self
+            .rows
+            .as_mut()?
+            .query(params![
+                session_id,
+                turn_id,
+                ts,
+                input_tokens,
+                output_tokens
+            ])
+            .ok()?;
         while let Ok(Some(row)) = rows.next() {
             if let Some(model) = non_empty(row.get(0).ok().flatten()) {
                 return Some(model);
             }
         }
         None
-    }
-
-    fn lookup_legacy(&mut self, session_id: &str, ts: i64) -> Option<String> {
-        if !self.legacy_by_session.contains_key(session_id) {
-            let mut models = HashMap::new();
-            if let Some(statement) = self.legacy.as_mut() {
-                if let Ok(mut rows) = statement.query([session_id]) {
-                    while let Ok(Some(row)) = rows.next() {
-                        let ts = row
-                            .get::<_, Option<f64>>(0)
-                            .ok()
-                            .flatten()
-                            .filter(|ts| ts.is_finite());
-                        if let (Some(ts), Some(model)) = (ts, non_empty(row.get(1).ok().flatten()))
-                        {
-                            models.entry(ts as i64).or_insert(model);
-                        }
-                    }
-                }
-            }
-            self.legacy_by_session
-                .insert(session_id.to_string(), models);
-        }
-        self.legacy_by_session.get(session_id)?.get(&ts).cloned()
     }
 }
 
@@ -324,32 +339,74 @@ mod tests {
         );
     }
     #[test]
-    fn mcode_usage_recovers_missing_model_from_pi_history() {
+    fn mcode_usage_recovers_missing_model_from_matching_messages() {
         let source = rusqlite::Connection::open_in_memory().unwrap();
         source
             .execute_batch(
                 r#"CREATE TABLE local_runtime_token_usage (
-            id INTEGER PRIMARY KEY,session_id TEXT,model TEXT,ts INTEGER,input_tokens INTEGER,
-            output_tokens INTEGER,reasoning_tokens INTEGER,cache_read_tokens INTEGER,
-            cache_write_tokens INTEGER,cost_usd REAL);
-            CREATE TABLE local_runtime_pi_history_rows (
-            id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,created_at_ms INTEGER,data_json TEXT);
-            CREATE TABLE local_runtime_messages (
-            session_id TEXT PRIMARY KEY,display_messages_json TEXT,pi_history_json TEXT);
-            INSERT INTO local_runtime_pi_history_rows VALUES
-            (1,'s1','user',100000,'{"role":"user","timestamp":100000}'),
-            (2,'s1','assistant',100000,'{"role":"assistant","provider":"minimax","model":"MiniMax-M3","timestamp":100000}');
-            INSERT INTO local_runtime_messages VALUES ('s2','[]',
-            '[{"role":"user","timestamp":200000},
-              {"role":"assistant","model":"vendor/legacy-model","timestamp":200000},
-              {"role":"assistant","model":"legacy-next","timestamp":250000}]');
-            INSERT INTO local_runtime_token_usage VALUES
-            (1,'s1',NULL,100000,1,2,0,0,0,NULL),
-            (2,'s2',NULL,200000,1,2,0,0,0,NULL),
-            (3,'s2',NULL,250000,1,2,0,0,0,NULL),
-            (4,'s1',NULL,300000,1,2,0,0,0,NULL);"#,
+            id INTEGER PRIMARY KEY,session_id TEXT,turn_id TEXT,model TEXT,ts INTEGER,
+            input_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER,
+            cache_read_tokens INTEGER,cache_write_tokens INTEGER,cost_usd REAL);
+            CREATE TABLE local_runtime_message_rows (
+            id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,turn_id TEXT,created_at_ms INTEGER,
+            data_json TEXT);"#,
             )
             .unwrap();
+        let usage = |id: i64, session: &str, turn: &str, ts: i64, output: i64, reasoning: i64| {
+            source
+                .execute(
+                    "INSERT INTO local_runtime_token_usage
+                     VALUES (?1,?2,?3,NULL,?4,1,?5,?6,0,0,NULL)",
+                    params![id, session, turn, ts, output, reasoning],
+                )
+                .unwrap();
+        };
+        let message = |session: &str, turn: &str, created: i64, model: &str| {
+            source
+                .execute(
+                    "INSERT INTO local_runtime_message_rows (session_id,role,turn_id,created_at_ms,data_json)
+                     VALUES (?1,'assistant',?2,?3,?4)",
+                    params![
+                        session,
+                        turn,
+                        created,
+                        format!(r#"{{"usage":{{"input_tokens":1,"output_tokens":2}},"model":"{model}"}}"#)
+                    ],
+                )
+                .unwrap();
+        };
+        // Message rows land seconds after the usage ts and carry the model alias.
+        usage(1, "s1", "t1", 100_000, 2, 0);
+        message("s1", "t1", 109_120, "MiniMax-M3");
+        // Same tokens in another turn must not leak in; without `$.model` the row stays unknown.
+        usage(2, "s2", "t2", 200_000, 2, 0);
+        for (turn, created, data_json) in [
+            (
+                "t9",
+                201_000,
+                r#"{"usage":{"input_tokens":1,"output_tokens":2},"model":"other-turn"}"#,
+            ),
+            (
+                "t2",
+                202_000,
+                r#"{"usage":{"input_tokens":1,"output_tokens":2}}"#,
+            ),
+        ] {
+            source
+                .execute(
+                    "INSERT INTO local_runtime_message_rows (session_id,role,turn_id,created_at_ms,data_json)
+                     VALUES ('s2','assistant',?1,?2,?3)",
+                    params![turn, created, data_json],
+                )
+                .unwrap();
+        }
+        // A same-token message written before the usage ts belongs to an earlier call.
+        usage(3, "s3", "t3", 300_000, 2, 0);
+        message("s3", "t3", 299_000, "too-early");
+        // The join uses the raw output column, without reasoning tokens added.
+        usage(4, "s4", "t4", 400_000, 2, 5);
+        message("s4", "t4", 409_000, "raw-output");
+
         let db = Database::memory().unwrap();
         assert_eq!(
             sync_from_database(&db, &source, "history")
@@ -359,23 +416,15 @@ mod tests {
         );
         let conn = db.conn.lock().unwrap();
         let mut query = conn
-            .prepare("SELECT model FROM proxy_request_logs ORDER BY created_at")
+            .prepare("SELECT model FROM proxy_request_logs ORDER BY request_id")
             .unwrap();
         let models = query
             .query_map([], |row| row.get::<_, String>(0))
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        // 旧版 JSON 里的模型名原样保留（不像 model 列那样剥 provider 前缀）；查不到仍记 unknown
-        assert_eq!(
-            models,
-            [
-                "MiniMax-M3",
-                "vendor/legacy-model",
-                "legacy-next",
-                "unknown"
-            ]
-        );
+        // 消息 JSON 里的模型名原样保留（不像 model 列那样剥 provider 前缀）；查不到仍记 unknown
+        assert_eq!(models, ["MiniMax-M3", "unknown", "unknown", "raw-output"]);
     }
 
     #[test]
@@ -543,6 +592,90 @@ mod tests {
                 )
                 .unwrap(),
             4
+        );
+    }
+
+    #[test]
+    fn mcode_usage_rescans_a_rebuilt_source_database() {
+        let now = chrono::Utc::now().timestamp_millis();
+        let source = rusqlite::Connection::open_in_memory().unwrap();
+        source
+            .execute_batch(
+                "CREATE TABLE local_runtime_token_usage (
+            id INTEGER PRIMARY KEY,session_id TEXT,turn_id TEXT,model TEXT,ts INTEGER,
+            input_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER,
+            cache_read_tokens INTEGER,cache_write_tokens INTEGER,cost_usd REAL);
+            CREATE TABLE local_runtime_message_rows (
+            id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,turn_id TEXT,created_at_ms INTEGER,
+            data_json TEXT);",
+            )
+            .unwrap();
+        // A rebuilt database restarts ids at 1 while the watermark still points at the
+        // previous generation's tail.
+        let usage = |id: i64, ts: i64| {
+            source
+                .execute(
+                    "INSERT INTO local_runtime_token_usage
+                     VALUES (?1,'fresh','t1','minimax/MiniMax-M3.1-Flash',?2,10,20,0,0,0,NULL)",
+                    params![id, ts],
+                )
+                .unwrap();
+        };
+        usage(1, now - 3_600_000);
+        usage(2, now - 3_500_000);
+        source
+            .execute(
+                "INSERT INTO local_runtime_message_rows (session_id,role,turn_id,created_at_ms,data_json)
+                 VALUES ('fresh','assistant','t1',?1,?2)",
+                params![
+                    now - 3_600_000 + 2_000,
+                    r#"{"usage":{"input_tokens":10,"output_tokens":20,"request_duration_ms":1500,"decode_duration_ms":500}}"#
+                ],
+            )
+            .unwrap();
+        let db = Database::memory().unwrap();
+        {
+            let conn = db.conn.lock().unwrap();
+            for key in ["rebuild", "rebuild#timing"] {
+                conn.execute(
+                    "INSERT INTO session_log_sync (file_path, last_modified, last_line_offset, last_synced_at)
+                     VALUES (?1, 0, 9687, 0)",
+                    [key],
+                )
+                .unwrap();
+            }
+        }
+        let result = sync_from_database(&db, &source, "rebuild").unwrap();
+        assert_eq!((result.files_scanned, result.imported), (1, 2));
+        {
+            let conn = db.conn.lock().unwrap();
+            let (model, latency, first_token): (String, i64, Option<i64>) = conn
+                .query_row(
+                    "SELECT model, latency_ms, first_token_ms FROM proxy_request_logs
+                     WHERE request_id = 'mcode:fresh:1'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                (model.as_str(), latency, first_token),
+                ("MiniMax-M3.1-Flash", 1_500, Some(1_000))
+            );
+            let watermark: i64 = conn
+                .query_row(
+                    "SELECT last_line_offset FROM session_log_sync WHERE file_path = 'rebuild'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(watermark, 2);
+        }
+        // The next sync continues from the rebuilt watermark instead of rescanning.
+        assert_eq!(
+            sync_from_database(&db, &source, "rebuild")
+                .unwrap()
+                .imported,
+            0
         );
     }
 }

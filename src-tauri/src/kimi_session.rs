@@ -1,10 +1,11 @@
 //! Request metadata shared by Kimi's session reader and usage importer.
+use crate::proxy::usage::parser::TokenUsage;
 use crate::services::session_usage::estimated_latency_ms;
 use crate::session_manager::providers::utils::parse_timestamp_to_ms;
 use serde_json::Value;
 use std::collections::HashMap;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct RequestInfo {
     pub model: Option<String>,
     pub latency_ms: i64,
@@ -33,6 +34,11 @@ pub(crate) struct RequestIndex {
     agent: Option<String>,
     step: Option<Step>,
     messages: HashMap<String, RequestInfo>,
+    /// Completed steps keyed by their token counters, anchored at the step.end time.
+    /// Standalone `usage.record` events repeat a step's counters without its message
+    /// join or timing; the usage importer joins each record back to the equal-countered
+    /// step to recover latency and request timestamps.
+    timings: HashMap<[u32; 4], Vec<(i64, RequestInfo)>>,
 }
 
 pub(crate) fn timestamp_ms(value: &Value) -> Option<i64> {
@@ -62,6 +68,18 @@ fn model_name(value: &Value) -> Option<&str> {
 fn duration_ms(value: &Value) -> Option<i64> {
     let value = value.as_f64()?;
     (value.is_finite() && (0.0..=3_600_000.0).contains(&value)).then_some(value.round() as i64)
+}
+
+/// The four counters a step and its standalone usage record share, normalized the way
+/// the usage importer normalizes `TokenUsage`.
+fn usage_key(usage: &Value) -> [u32; 4] {
+    let tokens = |field| usage[field].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32;
+    [
+        tokens("inputOther"),
+        tokens("output"),
+        tokens("inputCacheRead"),
+        tokens("inputCacheCreation"),
+    ]
 }
 
 impl RequestIndex {
@@ -164,6 +182,18 @@ impl RequestIndex {
                                 .filter(|first| *first <= latency_ms)
                                 .or(info.first_token_ms.filter(|first| *first <= latency_ms));
                         }
+                        let counters = usage_key(&event["usage"]);
+                        if counters.iter().any(|tokens| *tokens > 0)
+                            && (info.latency_ms > 0
+                                || info.first_token_ms.is_some()
+                                || info.request_ms.is_some())
+                        {
+                            let anchored = timestamp_ms(&record["time"]).unwrap_or(0);
+                            self.timings
+                                .entry(counters)
+                                .or_default()
+                                .push((anchored, info.clone()));
+                        }
                     }
                     _ => {}
                 }
@@ -174,6 +204,25 @@ impl RequestIndex {
 
     pub fn get(&self, meta: &Value) -> Option<&RequestInfo> {
         self.messages.get(meta["messageId"].as_str()?)
+    }
+
+    /// Consume the metadata of the completed step whose counters equal `usage`, nearest
+    /// in time to `near`. Every step answers at most one record, so repeated records
+    /// cannot inherit the same timing.
+    pub fn take_timing(&mut self, usage: &TokenUsage, near: i64) -> Option<RequestInfo> {
+        let counters = [
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_read_tokens,
+            usage.cache_creation_tokens,
+        ];
+        let steps = self.timings.get_mut(&counters)?;
+        let nearest = steps
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, (ended, _))| ended.abs_diff(near))
+            .map(|(index, _)| index)?;
+        Some(steps.remove(nearest).1)
     }
 
     pub fn model<'a>(&'a self, meta: &'a Value) -> Option<&'a str> {

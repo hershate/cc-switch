@@ -27,10 +27,13 @@ pub fn sync_kimi_usage(db: &Database) -> Result<SessionSyncResult, AppError> {
 
 fn sync_sessions(db: &Database, root: &Path) -> Result<SessionSyncResult, AppError> {
     let mut result = SessionSyncResult::default();
-    let cursors = load_sync_cursors(db)?;
     let Ok(workspaces) = fs::read_dir(root) else {
         return Ok(result);
     };
+    // With the sessions directory present, retire the legacy imports once so every wire
+    // is rescanned under the record namespace below.
+    migrate_to_record_namespace(db)?;
+    let cursors = load_sync_cursors(db)?;
     for workspace in workspaces.flatten() {
         let Ok(sessions) = fs::read_dir(workspace.path()) else {
             continue;
@@ -48,7 +51,9 @@ fn sync_sessions(db: &Database, root: &Path) -> Result<SessionSyncResult, AppErr
                 let modified = fs::metadata(&path)
                     .map(|meta| metadata_modified_nanos(&meta))
                     .unwrap_or(0);
-                let key = format!("kimi:{}", path.to_string_lossy());
+                // Versioned key: importer rewrites reschedule every wire for one full
+                // rescan instead of leaving cursors locked at EOF with stale semantics.
+                let key = format!("kimi:v2:{}", path.to_string_lossy());
                 if cursors.get(&key).is_some_and(|cursor| {
                     cursor.last_modified == modified
                         && cursor.last_line_offset
@@ -75,6 +80,42 @@ fn sync_sessions(db: &Database, root: &Path) -> Result<SessionSyncResult, AppErr
         }
     }
     Ok(result)
+}
+
+/// Retire the imports written before standalone records became the primary source.
+/// Versioning the cursor key (`kimi:v2:`) reschedules every wire for one rescan, but
+/// wires still exposing the legacy paths also emit records for the same calls, so their
+/// rows and receipts are dropped once — otherwise the rescan would count those calls
+/// twice. Proxied requests keep their own `data_source` and survive; the importer is
+/// younger than the 30-day rollup horizon, so no kimi detail can already be aggregated.
+/// The pre-v2 cursors double as the marker: they exist exactly until this migration
+/// deletes them, so it runs at most once.
+fn migrate_to_record_namespace(db: &Database) -> Result<(), AppError> {
+    let legacy = "file_path LIKE 'kimi:%' AND file_path NOT LIKE 'kimi:v2:%'";
+    let mut conn = lock_conn!(db.conn);
+    let tx = conn.transaction()?;
+    let scheduled: i64 = tx.query_row(
+        format!("SELECT COUNT(*) FROM session_log_sync WHERE {legacy}").as_str(),
+        [],
+        |row| row.get(0),
+    )?;
+    if scheduled == 0 {
+        return Ok(());
+    }
+    tx.execute(
+        "DELETE FROM proxy_request_logs WHERE app_type = 'kimi' AND data_source = 'kimi_session'",
+        [],
+    )?;
+    tx.execute(
+        "DELETE FROM session_usage_dedup WHERE data_source = 'kimi_session'",
+        [],
+    )?;
+    tx.execute(
+        format!("DELETE FROM session_log_sync WHERE {legacy}").as_str(),
+        [],
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 fn sync_file(
@@ -197,16 +238,24 @@ fn sync_file(
     }
     let mut conn = lock_conn!(db.conn);
     let tx = conn.transaction()?;
-    // Fallback only, never in addition: wires that expose usage through either legacy
-    // path above also emit `usage.record` events for the same model calls, so importing
-    // the records whenever pending is non-empty would count every request twice. The
-    // records carry no message join and no native timing, so they are imported only
-    // for protocol variants where neither legacy path yields anything.
-    let rows = if pending.is_empty() { records } else { pending };
+    // Records are the primary source, never merged with the legacy paths: wires still
+    // feeding those paths also emit records for the same calls (importing both would
+    // count every call twice), while newer protocol variants stopped writing them
+    // entirely, and interrupted calls reach the records but never the projections. The
+    // legacy paths keep only wires without a single record, where they are complete.
+    let from_records = !records.is_empty();
+    let rows = if from_records { records } else { pending };
     for (request, meta, mut usage, created) in rows {
+        // Records carry no message join and no native timing; join each one back to the
+        // completed step with equal counters to recover latency and request timestamps.
+        let joined = if from_records {
+            requests.take_timing(&usage, created)
+        } else {
+            requests.get(&meta).cloned()
+        };
+        let info = joined.as_ref();
         let model = requests.model(&meta).unwrap_or("unknown");
         usage.model = Some(model.into());
-        let info = requests.get(&meta);
         let latency = info.map_or(0, |info| info.latency_ms);
         let first_token = info.and_then(|info| info.first_token_ms);
         let started = info.and_then(|info| info.request_ms);
@@ -236,9 +285,10 @@ fn sync_file(
     Ok(result)
 }
 
-/// Standalone `usage.record` events (turn- or session-scoped) carry the same four token
-/// counters as the legacy paths but no message join, so they are kept as a per-wire
-/// fallback for protocol variants where neither legacy path fires.
+/// Standalone `usage.record` events (turn- or session-scoped) are the primary usage
+/// source: they cover every model call (including calls the legacy projections miss),
+/// always carry the model alias, and turn- with session-scoped counters add up without
+/// overlap.
 fn collect_usage_record(
     record: &Value,
     agent: &str,
@@ -403,7 +453,7 @@ mod tests {
             // The human projection can precede step.end while tools are running.
             message(id, start + first + stream, output),
             json!({"type":"context.append_loop_event","time":start+first+stream+100_000,"event":{"type":"tool.call","stepUuid":id}}),
-            json!({"type":"context.append_loop_event","time":start+first+stream+200_000,"event":{"type":"step.end","uuid":id,"messageId":id,"llmFirstTokenLatencyMs":first,"llmStreamDurationMs":stream}}),
+            json!({"type":"context.append_loop_event","time":start+first+stream+200_000,"event":{"type":"step.end","uuid":id,"messageId":id,"usage":{"inputOther":10,"output":output,"inputCacheRead":30,"inputCacheCreation":40},"llmFirstTokenLatencyMs":first,"llmStreamDurationMs":stream}}),
         ]
     }
 
@@ -768,7 +818,7 @@ mod tests {
     }
 
     #[test]
-    fn kimi_usage_falls_back_to_standalone_usage_records() {
+    fn kimi_usage_imports_standalone_usage_records() {
         let db = Database::memory().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("wire.jsonl");
@@ -881,16 +931,18 @@ mod tests {
     }
 
     #[test]
-    fn kimi_usage_keeps_legacy_imports_when_records_cover_the_same_calls() {
+    fn kimi_usage_prefers_records_over_the_legacy_paths() {
         let db = Database::memory().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("wire.jsonl");
-        // The legacy paths still work here, so the standalone record for the same call
-        // must not be imported on top of them.
+        // The legacy paths still work here, but the wire also emits a record for the
+        // same call; importing both would count it twice, so the record wins and the
+        // legacy projection is dropped. The record repeats the step's counters, so the
+        // step's native timing is joined onto the imported row.
         let mut records = request("one", "model-one", 1_700_000_000_000, 1_000, 2_000, 100);
         records.insert(
             3,
-            json!({"type":"usage.record","time":1_700_000_003_000i64,"agentId":"main","model":"kimi-code/k3.1-pro","usage":{"inputOther":10,"output":100,"inputCacheRead":30,"inputCacheCreation":0},"usageScope":"turn"}),
+            json!({"type":"usage.record","time":1_700_000_003_000i64,"agentId":"main","model":"kimi-code/k3.1-pro","usage":{"inputOther":10,"output":100,"inputCacheRead":30,"inputCacheCreation":40},"usageScope":"turn"}),
         );
         write_records(&path, &records);
         assert_eq!(
@@ -901,7 +953,7 @@ mod tests {
         );
         let conn = db.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT request_id, model, output_tokens FROM proxy_request_logs")
+            .prepare("SELECT request_id, model, output_tokens, latency_ms, first_token_ms FROM proxy_request_logs")
             .unwrap();
         let rows = stmt
             .query_map([], |row| {
@@ -909,6 +961,8 @@ mod tests {
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
                 ))
             })
             .unwrap()
@@ -916,7 +970,166 @@ mod tests {
             .unwrap();
         assert_eq!(
             rows,
-            vec![("kimi:agent-loop:one".into(), "model-one".into(), 100)]
+            vec![(
+                "kimi:record:main:1700000003000".into(),
+                "k3.1-pro".into(),
+                100,
+                3_000,
+                Some(1_000)
+            )]
         );
+    }
+
+    #[test]
+    fn kimi_usage_joins_records_to_steps_for_timing_only() {
+        let db = Database::memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wire.jsonl");
+        // Newer protocol variants keep `step.end` (with native timing) beside the
+        // records but drop the request events, so the model comes from the record and
+        // the timing from the equal-countered step. Session-scoped records describe
+        // calls outside any turn and keep no timing.
+        let turn = |id: &str, model: &str, start: i64, output: u64| {
+            let usage =
+                json!({"inputOther":10,"output":output,"inputCacheRead":30,"inputCacheCreation":0});
+            vec![
+                json!({"type":"context.append_loop_event","time":start-10,"agentId":"agent-0","event":{"type":"step.begin","uuid":id,"turnId":"0","step":1}}),
+                json!({"type":"usage.record","time":start+900,"agentId":"agent-0","model":format!("kimi-code/{model}"),"usage":usage,"usageScope":"turn"}),
+                json!({"type":"context.append_loop_event","time":start+1_000,"agentId":"agent-0","event":{"type":"step.end","uuid":id,"turnId":"0","step":1,"usage":usage,"messageId":id,"llmFirstTokenLatencyMs":200,"llmStreamDurationMs":800}}),
+            ]
+        };
+        let mut records = turn("step-one", "k3.1-pro", 1_700_000_000_000, 70);
+        records.extend(turn(
+            "step-two",
+            "k3.1-pro-highspeed",
+            1_700_000_010_000,
+            90,
+        ));
+        records.push(json!({"type":"usage.record","time":1_700_000_020_000i64,"agentId":"agent-0","model":"kimi-code/k3.1-pro","usage":{"inputOther":900,"output":1,"inputCacheRead":30,"inputCacheCreation":0},"usageScope":"session"}));
+        write_records(&path, &records);
+        assert_eq!(
+            sync_file(&db, &path, "agent-0", "session", "file", 1)
+                .unwrap()
+                .imported,
+            3
+        );
+        let conn = db.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT model, latency_ms, first_token_ms FROM proxy_request_logs ORDER BY created_at")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("k3.1-pro".into(), 1_000, Some(200)),
+                ("k3.1-pro-highspeed".into(), 1_000, Some(200)),
+                ("k3.1-pro".into(), 0, None)
+            ]
+        );
+    }
+
+    #[test]
+    fn kimi_usage_reimports_legacy_history_under_the_record_namespace() {
+        let db = Database::memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let wire = root.path().join("wd_w/session_s/agents/main/wire.jsonl");
+        write_records(
+            &wire,
+            &[
+                json!({"type":"usage.record","time":1_792_847_003_888i64,"agentId":"main","model":"kimi-code/k3.1-pro","usage":{"inputOther":2037,"output":562,"inputCacheRead":19456,"inputCacheCreation":0},"usageScope":"turn"}),
+            ],
+        );
+        {
+            let conn = db.conn.lock().unwrap();
+            // A legacy import (cursor, receipt, row) plus a proxied request that must
+            // survive the migration.
+            conn.execute(
+                "INSERT INTO session_log_sync (file_path, last_modified, last_line_offset, last_synced_at) VALUES (?1, 1, 999, 0)",
+                [format!("kimi:{}", wire.display())],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO proxy_request_logs (request_id, provider_id, app_type, model, latency_ms, status_code, created_at, data_source)
+                 VALUES ('kimi:agent-loop:old', '_kimi_session', 'kimi', 'k3.1-pro', 0, 200, 1, 'kimi_session')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO session_usage_dedup (data_source, request_id, semantic_id, has_entry_id)
+                 VALUES ('kimi_session', 'kimi:agent-loop:old', 'kimi:agent-loop:old', 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO proxy_request_logs (request_id, provider_id, app_type, model, latency_ms, status_code, created_at, data_source)
+                 VALUES ('proxied', 'official', 'kimi', 'k3.1-pro', 0, 200, 1, 'proxy')",
+                [],
+            )
+            .unwrap();
+        }
+        let result = sync_sessions(&db, root.path()).unwrap();
+        assert_eq!((result.files_scanned, result.imported), (1, 1));
+        {
+            let conn = db.conn.lock().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT request_id, data_source FROM proxy_request_logs WHERE app_type = 'kimi' ORDER BY request_id")
+                .unwrap();
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(
+                rows,
+                vec![
+                    (
+                        "kimi:record:main:1792847003888".into(),
+                        "kimi_session".into()
+                    ),
+                    ("proxied".into(), "proxy".into())
+                ]
+            );
+            let receipts: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM session_usage_dedup WHERE data_source = 'kimi_session'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(receipts, 1);
+            let legacy: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM session_log_sync WHERE file_path LIKE 'kimi:%' AND file_path NOT LIKE 'kimi:v2:%'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(legacy, 0);
+        }
+        // The v2 cursor guards the wire now; nothing is rescanned or recounted.
+        assert_eq!(sync_sessions(&db, root.path()).unwrap().files_scanned, 0);
+        let receipts: i64 = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM session_usage_dedup WHERE data_source = 'kimi_session'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(receipts, 1);
     }
 }
