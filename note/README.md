@@ -1,6 +1,6 @@
 # cc-switch 项目要点总览（note 索引）
 
-> 本文件是 `note/` 目录总入口：汇总三次工作流的全部要点（全库代码分析 + 本机构建环境配置 + ZCode/Kimi 用量接入），并索引详细文档。最后更新：2026-11-21，对应版本 v4.0.35。
+> 本文件是 `note/` 目录总入口：汇总四次工作流的全部要点（全库代码分析 + 本机构建环境配置 + ZCode/Kimi 用量接入 + 用量修复与 fork 独立化），并索引详细文档。最后更新：2026-11-21，对应版本 v4.0.35。
 
 ## 1. 文档索引
 
@@ -9,6 +9,7 @@ flowchart TD
     N["note 总入口 README.md"] --> R["report/codebase-analysis<br/>全库分析 7 份报告"]
     N --> D["dev/environment-setup.md<br/>构建环境配置与验证"]
     N --> D2["dev/zcode-kimi-usage-notes.md<br/>ZCode 用量接入与 Kimi 修复"]
+    N --> D3["dev/usage-accuracy-and-fork-independence.md<br/>用量统计修复 + 更新器移除 + CI 适配"]
     R --> R1["index.md 报告索引"]
     R --> R2["01 架构"]
     R --> R3["02 数据结构"]
@@ -29,6 +30,7 @@ flowchart TD
 | [06-engineering.md](report/codebase-analysis/06-engineering.md) | 测试体系、8 个 CI workflow、构建配置、发布与 R2 分发 | 同上 |
 | [dev/environment-setup.md](dev/environment-setup.md) | 本机工具链（F 盘）、镜像、版本锁定变更、fork CI 降级、验证结果 | 2026-11-19 环境配置 |
 | [dev/zcode-kimi-usage-notes.md](dev/zcode-kimi-usage-notes.md) | ZCode 会话格式实测、用量导入实现与前端展示、Kimi usage.record 按需降级修复、门禁与遗留事项 | 2026-11-20/21 用量接入 |
+| [dev/usage-accuracy-and-fork-independence.md](dev/usage-accuracy-and-fork-independence.md) | ZCode/Kimi/MCode 用量漏计审计根因与修复设计（主源切换 + 清理重导）、更新器与上游分发移除、release.yml fork 独立化、验证结果与遗留事项 | 2026-11-21 用量修复与 fork 独立化 |
 
 ## 2. 项目速览
 
@@ -65,7 +67,8 @@ pnpm install --frozen-lockfile        # 34.4s
 pnpm typecheck                        # 0 错误
 pnpm build:renderer                   # 21.6s
 cargo build                           # debug 全量 2m15s（Rust 1.99.1）
-# 完整打包（本地无 updater 签名密钥时必须关闭 updater 产物）：
+# 完整打包（2026-11-19 实测，当时需关闭 updater 产物；updater 已于 2026-11-21 移除，现直接用：
+#   pnpm tauri build --bundles msi）
 pnpm tauri build --bundles msi --config '{"bundle":{"createUpdaterArtifacts":false},"plugins":{"updater":{"active":false}}}'
 #   → release 5m44s；产出 src-tauri/target/release/bundle/msi/CC Switch_4.0.35_x64_en-US.msi（19.06 MiB）
 #   → 便携版 src-tauri/target/release/cc-switch.exe
@@ -74,10 +77,10 @@ pnpm test:unit                        # 前端 vitest
 cargo nextest run --profile ci        # 后端（或 cargo test）
 ```
 
-## 6. CI / 发布要点（fork 适配）
+## 6. CI / 发布要点（fork 独立维护形态，2026-11-21 起）
 
-- fork 缺发布 secrets 时自动降级（官方仓库路径不变）：无 `TAURI_SIGNING_PRIVATE_KEY` → 未签名安装包（`--config` 关 updater 产物、`.sig` 缺失仅告警）；无 `APPLE_CERTIFICATE` → macOS 链整体跳过；无任何 `.sig` → 跳过 latest.json，安装包照常发 Release。
-- `sync-r2.yml` 天然兼容 fork（缺 R2 secrets 优雅跳过，仅官方仓库强制）。
+- `release.yml` 已重写为无 secrets 形态：`whats-new-check → release（四平台未签名矩阵：windows-2022 / windows-11-arm / ubuntu-22.04 / ubuntu-22.04-arm）→ publish-release`，仅依赖自动提供的 `GITHUB_TOKEN`；不再产出 `.sig` / updater 产物 / `latest.json`（历史降级逻辑与签名链已随更新器移除删除）。
+- `sync-r2.yml`、`claude.yml`、`FUNDING.yml`、`prepare-tauri-signing-key` 复合动作已删除；`ci.yml` / `wsl2-nightly.yml` / `labeler.yml` / `stale.yml` 保留未动。
 - fork 推 tag 发布前必须存在 `src/whats-new/<版本>.json`（whats-new-check 强制）。
 - 外部 PR 改 `SCHEMA_VERSION` 会被 schema-version.yml 自动关闭；改表先 `SCHEMA_VERSION += 1` 再在 `schema.rs` match 加迁移。
 - 原 Rust 1.99.1 下 3 处 `fetch_update` 弃用警告已随 `76f489f3` 改用 `try_update` 消除（见 `dev/environment-setup.md` §4 的历史记录）。
@@ -96,3 +99,7 @@ cargo nextest run --profile ci        # 后端（或 cargo test）
 | `76f489f3` | clippy 与弃用警告清零（rust 1.99.1 门禁对齐） |
 | `1c868d98` | Windows 符号链接/系统代理测试夹具加固 |
 | `4b9217a6` | vitest minWorkers 固定与平台组件 mock |
+| `0dbe814a` | ZCode 用量主源切换 db.sqlite model_usage（v1 残留清理 + rollout 回退） |
+| `a96c5a60` | Kimi usage.record 主源 + v2 游标迁移重导；MCode 重建水位停摆与模型回查修复 |
+| `76a9f661` | 更新器与上游分发移除（后端 18 + 前端 13 + 测试 2 + 脚本 2 项） |
+| `c18f5a12` | CI 适配 fork 独立维护（release.yml 重写 369 行） |
