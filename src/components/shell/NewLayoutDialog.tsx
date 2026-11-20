@@ -18,7 +18,7 @@ import { markSeen } from "@/lib/whatsNew";
 import type { Settings } from "@/types";
 import { APP_IDS } from "@/config/appSpecs";
 
-const RELEASES_URL = "https://github.com/farion1231/cc-switch/releases";
+const RELEASES_URL = "https://github.com/hershate/cc-switch/releases";
 
 /** 任一应用的数据库里已经有供应商（找到一家就停） */
 async function hasAnyProvider(): Promise<boolean> {

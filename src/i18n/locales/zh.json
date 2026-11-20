@@ -1002,23 +1002,12 @@
     "browsePlaceholderDsh": "例如：/home/<你的用户名>/.dsh",
     "browseDirectory": "浏览目录",
     "resetDefault": "恢复默认目录（需保存后生效）",
-    "checkForUpdates": "检查更新",
-    "updateTo": "更新到 v{{version}}",
-    "updating": "更新中...",
-    "checking": "检查中...",
-    "upToDate": "已是最新",
     "aboutHint": "查看版本信息与更新状态。",
     "portableMode": "当前为便携版，更新需手动下载。",
-    "portableUpdateHint": "便携版：点击上方按钮会下载新版压缩包，解压后覆盖原来的 cc-switch.exe 即可。配置和数据保存在用户目录下的 .cc-switch，不会因覆盖而丢失。",
-    "updateAvailable": "检测到新版本：{{version}}",
     "updateBadge": "有更新可用",
-    "updateFailed": "更新安装失败，已尝试打开下载页面。",
-    "checkUpdateFailed": "检查更新失败，请稍后重试。",
-    "openReleaseNotesFailed": "打开更新日志失败",
     "releaseNotes": "更新日志",
     "viewReleaseNotes": "查看该版本更新日志",
     "viewCurrentReleaseNotes": "查看当前版本更新日志",
-    "officialWebsite": "官方网站",
     "github": "GitHub",
     "starPrompt": "如果 CC Switch 帮到了你，请在 GitHub 点个 Star，这对我们意义重大",
     "starOnGithub": "去点 Star",
@@ -1039,7 +1028,6 @@
     "updateAllTools": "全部升级（{{count}}）",
     "currentVersion": "当前版本",
     "latestVersion": "最新版本",
-    "updateAvailableShort": "可升级",
     "toolInstall": "安装",
     "toolUninstall": "卸载",
     "toolUninstallConfirmTitle": "卸载 {{tool}}？",
@@ -2901,14 +2889,6 @@
     "description": "当前数据库由更新版本的 CC Switch 创建，需要升级应用后才能继续使用。升级不会删除你的数据。",
     "versionInfo": "数据库版本 v{{db}} · 应用支持 v{{supported}}",
     "dbPath": "数据库文件",
-    "checking": "正在检查可用更新…",
-    "updateAvailable": "发现新版本 v{{version}}，升级后即可继续使用。",
-    "incompatibleTitle": "升级也无法解决",
-    "incompatibleDescription": "你已是最新版本，但数据库版本（v{{db}}）仍高于本应用支持的版本（v{{supported}}）。该数据库可能由第三方客户端或更高版本创建，升级当前官方应用也无法兼容。",
-    "preparing": "正在准备更新…",
-    "downloading": "正在下载更新…",
-    "upgradeNow": "升级应用",
-    "retry": "重试升级",
     "openReleases": "打开发布页",
     "openConfigDir": "打开配置目录",
     "quit": "退出"
@@ -4337,7 +4317,6 @@
     "appsTitle": "应用：安装、升级、在侧栏显示哪些",
     "appsHasUpdate": "应用 · 有可用更新",
     "settings": "设置",
-    "settingsHasUpdate": "设置 · CC Switch 有新版本",
     "mode": {
       "route": "路由",
       "stack": "聚合"
@@ -5305,18 +5284,5 @@
       "managedHint": "账号在授权中心管理：退出登录后这张卡会自动消失。"
     },
     "deleteSessionHint": "请在 DeepSeek Harness 中删除此会话，以保持原生历史记录一致。"
-  },
-  "autoUpdate": {
-    "toggle": "自动下载更新",
-    "toggleHelp": "在后台下载新版本，下载完成后询问是否安装，不会未经确认就安装。",
-    "unsupported": "便携版和 Linux 的 deb / rpm 安装包不支持自动更新",
-    "readyTitle": "新版本 v{{version}} 已下载完成",
-    "readyBody": "现在安装吗？CC Switch 会重启。",
-    "readyBodyRouting": "现在安装吗？CC Switch 会重启，正在经本地路由的请求会中断。",
-    "later": "稍后",
-    "installNow": "安装并重启",
-    "installFailed": "安装更新失败",
-    "downloadingInline": "正在后台下载新版本…",
-    "downloadedInline": "已下载完毕"
   }
 }

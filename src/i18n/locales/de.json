@@ -1002,23 +1002,12 @@
     "browsePlaceholderDsh": "z. B. /home/<your-username>/.dsh",
     "browseDirectory": "Verzeichnis auswählen",
     "resetDefault": "Auf Standardverzeichnis zurücksetzen (wirkt nach dem Speichern)",
-    "checkForUpdates": "Nach Updates suchen",
-    "updateTo": "Auf v{{version}} aktualisieren",
-    "updating": "Wird aktualisiert …",
-    "checking": "Wird geprüft …",
-    "upToDate": "Auf dem neuesten Stand",
     "aboutHint": "Versionsinformationen und Update-Status anzeigen.",
     "portableMode": "Portabler Modus: Updates müssen manuell heruntergeladen werden.",
-    "portableUpdateHint": "Portabler Modus: Die Schaltfläche oben lädt das neue ZIP herunter. Entpacken Sie es und ersetzen Sie Ihre vorhandene cc-switch.exe. Ihre Einstellungen und Daten liegen in .cc-switch in Ihrem Benutzerordner und sind nicht betroffen.",
-    "updateAvailable": "Neue Version verfügbar: {{version}}",
     "updateBadge": "Update verfügbar",
-    "updateFailed": "Die Update-Installation ist fehlgeschlagen, es wurde versucht, die Download-Seite zu öffnen.",
-    "checkUpdateFailed": "Die Suche nach Updates ist fehlgeschlagen, bitte versuchen Sie es später erneut.",
-    "openReleaseNotesFailed": "Die Versionshinweise konnten nicht geöffnet werden",
     "releaseNotes": "Versionshinweise",
     "viewReleaseNotes": "Versionshinweise zu dieser Version anzeigen",
     "viewCurrentReleaseNotes": "Versionshinweise zur aktuellen Version anzeigen",
-    "officialWebsite": "Offizielle Website",
     "github": "GitHub",
     "starPrompt": "Wenn Ihnen CC Switch geholfen hat, geben Sie uns bitte einen Stern auf GitHub – das bedeutet uns sehr viel",
     "starOnGithub": "Auf GitHub mit Stern markieren",
@@ -1039,7 +1028,6 @@
     "updateAllTools": "Alle aktualisieren ({{count}})",
     "currentVersion": "Aktuelle Version",
     "latestVersion": "Neueste Version",
-    "updateAvailableShort": "Aktualisieren",
     "toolInstall": "Installieren",
     "toolUninstall": "Deinstallieren",
     "toolUninstallConfirmTitle": "{{tool}} deinstallieren?",
@@ -2901,14 +2889,6 @@
     "description": "Diese Datenbank wurde von einer neueren Version von CC Switch erstellt. Aktualisieren Sie die App, um fortzufahren. Durch die Aktualisierung gehen keine Daten verloren.",
     "versionInfo": "Datenbank v{{db}} · App unterstützt v{{supported}}",
     "dbPath": "Datenbankdatei",
-    "checking": "Suche nach verfügbaren Updates …",
-    "updateAvailable": "Version v{{version}} ist verfügbar; nach der Aktualisierung können Sie fortfahren.",
-    "incompatibleTitle": "Eine Aktualisierung behebt das nicht",
-    "incompatibleDescription": "Sie verwenden bereits die neueste Version, aber die Datenbank (v{{db}}) ist weiterhin neuer, als diese App unterstützt (v{{supported}}). Sie wurde vermutlich von einem Drittanbieter-Client oder einem neueren Build erstellt, daher lässt sich die offizielle App durch eine Aktualisierung nicht kompatibel machen.",
-    "preparing": "Update wird vorbereitet …",
-    "downloading": "Update wird heruntergeladen …",
-    "upgradeNow": "App aktualisieren",
-    "retry": "Aktualisierung wiederholen",
     "openReleases": "Releases-Seite öffnen",
     "openConfigDir": "Konfigurationsordner öffnen",
     "quit": "Beenden"
@@ -4337,7 +4317,6 @@
     "appsTitle": "Apps: installieren, aktualisieren, festlegen, welche in der Seitenleiste erscheinen",
     "appsHasUpdate": "Apps · Updates verfügbar",
     "settings": "Optionen",
-    "settingsHasUpdate": "Einstellungen · Eine neue Version von CC Switch ist verfügbar",
     "mode": {
       "route": "Routing",
       "stack": "Aggregation"
@@ -5305,18 +5284,5 @@
       "managedHint": "Dieses Konto wird in der Kontoverwaltung verwaltet; die Karte verschwindet nach der Abmeldung."
     },
     "deleteSessionHint": "Löschen Sie diese Sitzung in DeepSeek Harness, damit der Verlauf konsistent bleibt."
-  },
-  "autoUpdate": {
-    "toggle": "Updates automatisch herunterladen",
-    "toggleHelp": "Lädt neue Versionen im Hintergrund herunter und fragt vor der Installation nach. Ohne Ihre Bestätigung wird nichts installiert.",
-    "unsupported": "Nicht verfügbar für die portable Version und Linux-deb-/rpm-Pakete",
-    "readyTitle": "v{{version}} wurde heruntergeladen",
-    "readyBody": "Jetzt installieren? CC Switch wird neu gestartet.",
-    "readyBodyRouting": "Jetzt installieren? CC Switch wird neu gestartet, laufende Anfragen über das lokale Routing werden abgebrochen.",
-    "later": "Später",
-    "installNow": "Installieren und neu starten",
-    "installFailed": "Update-Installation fehlgeschlagen",
-    "downloadingInline": "Neue Version wird im Hintergrund heruntergeladen…",
-    "downloadedInline": "Heruntergeladen"
   }
 }

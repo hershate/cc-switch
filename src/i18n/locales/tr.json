@@ -1002,23 +1002,12 @@
     "browsePlaceholderDsh": "örn. /home/<kullanıcı-adınız>/.dsh",
     "browseDirectory": "Dizine Göz Atın",
     "resetDefault": "Varsayılan dizine sıfırla (kaydettikten sonra etkili olur)",
-    "checkForUpdates": "Güncellemeleri Kontrol Et",
-    "updateTo": "v{{version}}'ye güncelleme",
-    "updating": "Güncelleniyor...",
-    "checking": "Kontrol ediliyor...",
-    "upToDate": "Güncel",
     "aboutHint": "Sürüm bilgilerini ve güncelleme durumunu görüntüleyin.",
     "portableMode": "Taşınabilir mod: Güncellemeler manuel olarak indirilmeyi gerektirir.",
-    "portableUpdateHint": "Taşınabilir modda yukarıdaki düğme yeni ZIP dosyasını indirir. ZIP'i açıp mevcut cc-switch.exe dosyasını yenisiyle değiştirin. Ayarlarınız ve verileriniz kullanıcı klasörünüzdeki .cc-switch dizininde bulunur ve etkilenmez.",
-    "updateAvailable": "Yeni sürüm mevcut: {{version}}",
     "updateBadge": "Güncelleme mevcut",
-    "updateFailed": "Güncelleme yüklemesi başarısız oldu, indirme sayfası açılmaya çalışıldı.",
-    "checkUpdateFailed": "Güncellemeler kontrol edilemedi. Lütfen daha sonra tekrar deneyin.",
-    "openReleaseNotesFailed": "Sürüm notları açılamadı",
     "releaseNotes": "Sürüm Notları",
     "viewReleaseNotes": "Bu sürümün sürüm notlarını görüntüle",
     "viewCurrentReleaseNotes": "Mevcut sürüm sürüm notlarını görüntüle",
-    "officialWebsite": "Resmi Web Sitesi",
     "github": "GitHub",
     "starPrompt": "CC Switch size yardımcı olduysa lütfen GitHub’da bize yıldız verin — bu bizim için çok şey ifade ediyor",
     "starOnGithub": "GitHub’da yıldız",
@@ -1039,7 +1028,6 @@
     "updateAllTools": "Tümünü Güncelle ({{count}})",
     "currentVersion": "Güncel Sürüm",
     "latestVersion": "Son Sürüm",
-    "updateAvailableShort": "Güncelle",
     "toolInstall": "Yükle",
     "toolUninstall": "Kaldır",
     "toolUninstallConfirmTitle": "{{tool}} kaldırılsın mı?",
@@ -2832,14 +2820,6 @@
     "description": "Bu veritabanı CC Switch’in daha yeni bir sürümü tarafından oluşturuldu. Devam etmek için uygulamayı yükseltin. Yükseltme verilerinizi silmez.",
     "versionInfo": "Veritabanı v{{db}} · Uygulama v{{supported}}'yi destekliyor",
     "dbPath": "Veritabanı dosyası",
-    "checking": "Mevcut güncellemeler kontrol ediliyor…",
-    "updateAvailable": "Sürüm v{{version}} mevcuttur; yükseltme devam etmenize izin verecektir.",
-    "incompatibleTitle": "Yükseltme bunu düzeltmez",
-    "incompatibleDescription": "Zaten en son sürümü kullanıyorsunuz ancak veritabanı (v{{db}}) hala bu uygulamanın desteklediğinden (v{{supported}}) daha yeni. Büyük olasılıkla üçüncü taraf bir istemci veya daha yeni bir yapı tarafından oluşturulmuş olduğundan, resmi uygulamayı yükseltmek onu uyumlu hale getiremez.",
-    "preparing": "Güncelleme hazırlanıyor…",
-    "downloading": "Güncelleme indiriliyor…",
-    "upgradeNow": "Uygulamayı yükselt",
-    "retry": "Yükseltmeyi yeniden dene",
     "openReleases": "Sürümler sayfasını aç",
     "openConfigDir": "Yapılandırma klasörünü aç",
     "quit": "Çık"
@@ -4268,7 +4248,6 @@
     "appsTitle": "Uygulamalar: yükleyin, yükseltin, kenar çubuğunda hangilerinin gösterileceğini seçin",
     "appsHasUpdate": "Uygulamalar · güncellemeler mevcut",
     "settings": "Ayarlar",
-    "settingsHasUpdate": "Ayarlar · yeni bir CC Switch sürümü mevcut",
     "mode": {
       "route": "Yönlendirme",
       "stack": "Birleştirme"
@@ -5305,18 +5284,5 @@
       "expiryShowAll": "Her kredi grubunun son kullanma tarihini göster",
       "inTime": "{{time}}'de"
     }
-  },
-  "autoUpdate": {
-    "toggle": "Güncellemeleri otomatik indir",
-    "toggleHelp": "Yeni sürümleri arka planda indirir ve kurmadan önce sorar. Onayınız olmadan hiçbir şey kurulmaz.",
-    "unsupported": "Taşınabilir sürümde ve Linux deb / rpm paketlerinde kullanılamaz",
-    "readyTitle": "v{{version}} sürümü indirildi",
-    "readyBody": "Şimdi kurulsun mu? CC Switch yeniden başlatılacak.",
-    "readyBodyRouting": "Şimdi kurulsun mu? CC Switch yeniden başlatılacak ve yerel yönlendirme üzerinden devam eden istekler kesilecek.",
-    "later": "Daha sonra",
-    "installNow": "Kur ve yeniden başlat",
-    "installFailed": "Güncelleme kurulamadı",
-    "downloadingInline": "Yeni sürüm arka planda indiriliyor…",
-    "downloadedInline": "İndirildi"
   }
 }

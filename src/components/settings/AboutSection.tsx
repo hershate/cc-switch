@@ -1,35 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  CheckCircle2,
-  Download,
   ExternalLink,
   Github,
-  Globe,
   Info,
   Loader2,
-  RefreshCw,
   Sparkles,
   Star,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "react-i18next";
-import { toast } from "@/lib/toast";
 import { getVersion } from "@tauri-apps/api/app";
-import { providersApi, settingsApi } from "@/lib/api";
-import { useUpdate } from "@/contexts/UpdateContext";
+import { settingsApi } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { WhatsNewDialog } from "@/components/WhatsNewDialog";
 import { WHATS_NEW_ENTRIES, entriesUpTo } from "@/lib/whatsNew";
 import ccswitchLogo from "@/assets/icons/logo.svg";
-import { extractErrorMessage } from "@/utils/errorUtils";
-import { Switch } from "@/components/ui/switch";
-import { SettingsRow } from "./SettingsLayout";
 
 interface AboutSectionProps {
   isPortable: boolean;
-  autoUpdateEnabled?: boolean;
-  onAutoSave?: (updates: { autoUpdateEnabled: boolean }) => Promise<boolean>;
 }
 
 // 应用自身版本（getVersion，本地毫秒级、无网络）也缓存一份，纯为重挂时免去 loading 闪烁。
@@ -46,15 +35,14 @@ function readStarPromptDismissed(): boolean {
   }
 }
 
+const RELEASES_URL = "https://github.com/hershate/cc-switch/releases";
+const GITHUB_URL = "https://github.com/hershate/cc-switch";
+
 /**
- * 设置 → 关于：版本、便携模式、检查更新 / 安装并重启、项目链接。
+ * 设置 → 关于：版本、便携模式、项目链接。
  * 命令行应用的安装与升级在侧栏「应用」页。
  */
-export function AboutSection({
-  isPortable,
-  autoUpdateEnabled = false,
-  onAutoSave,
-}: AboutSectionProps) {
+export function AboutSection({ isPortable }: AboutSectionProps) {
   const { t } = useTranslation();
   // 惰性初始化自模块缓存：重挂时首帧即渲染上次的值，避免 loading 闪烁；首次挂载缓存
   // 为空则回退到原始初值（null / loading）。
@@ -62,7 +50,6 @@ export function AboutSection({
   const [isLoadingVersion, setIsLoadingVersion] = useState(
     () => appVersionCache === null,
   );
-  const [isDownloading, setIsDownloading] = useState(false);
   const [whatsNewOpen, setWhatsNewOpen] = useState(false);
   const [starPromptDismissed, setStarPromptDismissed] = useState(
     readStarPromptDismissed,
@@ -70,33 +57,6 @@ export function AboutSection({
   const recentEntries = useMemo(
     () => (version ? entriesUpTo(WHATS_NEW_ENTRIES, version) : []),
     [version],
-  );
-
-  const {
-    hasUpdate,
-    updateInfo,
-    checkUpdate,
-    resetDismiss,
-    isChecking,
-    autoUpdateSupported,
-    autoUpdateDownloading,
-    readyUpdate,
-    refreshAutoUpdate,
-    startAutoDownload,
-  } = useUpdate();
-
-  const handleAutoUpdateChange = useCallback(
-    async (enabled: boolean) => {
-      if (!onAutoSave) return;
-      const saved = await onAutoSave({ autoUpdateEnabled: enabled });
-      if (!saved) return;
-      // 关掉即视为不要已下好的包（后端不再报），打开就马上在后台下一次
-      await refreshAutoUpdate();
-      // 托盘里的「重启并更新」跟着开关出现 / 消失
-      providersApi.updateTrayMenu().catch(console.error);
-      if (enabled) void startAutoDownload();
-    },
-    [onAutoSave, refreshAutoUpdate, startAutoDownload],
   );
 
   useEffect(() => {
@@ -127,32 +87,24 @@ export function AboutSection({
   }, []);
 
   const handleOpenReleaseNotes = useCallback(async () => {
+    const targetVersion = version ?? "";
+    const displayVersion = targetVersion.startsWith("v")
+      ? targetVersion
+      : targetVersion
+        ? `v${targetVersion}`
+        : "";
+
     try {
-      const targetVersion = updateInfo?.availableVersion ?? version ?? "";
-      const displayVersion = targetVersion.startsWith("v")
-        ? targetVersion
-        : targetVersion
-          ? `v${targetVersion}`
-          : "";
-
-      if (!displayVersion) {
-        await settingsApi.openExternal(
-          "https://github.com/farion1231/cc-switch/releases",
-        );
-        return;
-      }
-
       await settingsApi.openExternal(
-        `https://github.com/farion1231/cc-switch/releases/tag/${displayVersion}`,
+        displayVersion ? `${RELEASES_URL}/tag/${displayVersion}` : RELEASES_URL,
       );
     } catch (error) {
       console.error("[AboutSection] Failed to open release notes", error);
-      toast.error(t("settings.openReleaseNotesFailed"));
     }
-  }, [t, updateInfo?.availableVersion, version]);
+  }, [version]);
 
   const handleOpenGithub = useCallback(() => {
-    void settingsApi.openExternal("https://github.com/farion1231/cc-switch");
+    void settingsApi.openExternal(GITHUB_URL);
   }, []);
 
   const handleDismissStarPrompt = useCallback(() => {
@@ -163,67 +115,6 @@ export function AboutSection({
       // 存不下就只在本次会话里隐藏
     }
   }, []);
-
-  const handleCheckUpdate = useCallback(async () => {
-    if (hasUpdate) {
-      if (isPortable) {
-        try {
-          await settingsApi.openPortableUpdateDownload(
-            updateInfo?.availableVersion ?? "",
-          );
-        } catch (error) {
-          console.error("[AboutSection] Portable update failed", error);
-        }
-        return;
-      }
-
-      setIsDownloading(true);
-      try {
-        resetDismiss();
-        const installed = await settingsApi.installUpdateAndRestart();
-        if (!installed) {
-          toast.success(t("settings.upToDate"), { closeButton: true });
-        }
-      } catch (error) {
-        console.error("[AboutSection] Update failed", error);
-        toast.error(t("settings.updateFailed"), {
-          description: extractErrorMessage(error) || undefined,
-          closeButton: true,
-        });
-        try {
-          await settingsApi.checkUpdates();
-        } catch (fallbackError) {
-          console.error(
-            "[AboutSection] Failed to open fallback updater",
-            fallbackError,
-          );
-        }
-      } finally {
-        setIsDownloading(false);
-      }
-      return;
-    }
-
-    try {
-      const available = await checkUpdate();
-      if (!available) {
-        toast.success(t("settings.upToDate"), { closeButton: true });
-      }
-    } catch (error) {
-      console.error("[AboutSection] Check update failed", error);
-      toast.error(t("settings.checkUpdateFailed"), {
-        description: extractErrorMessage(error) || undefined,
-        closeButton: true,
-      });
-    }
-  }, [
-    checkUpdate,
-    hasUpdate,
-    isPortable,
-    resetDismiss,
-    t,
-    updateInfo?.availableVersion,
-  ]);
 
   const displayVersion = version ?? t("common.unknown");
 
@@ -255,94 +146,7 @@ export function AboutSection({
             )}
           </div>
         </div>
-        <Button
-          type="button"
-          variant={hasUpdate ? "solid" : "neutral"}
-          size="regular"
-          onClick={handleCheckUpdate}
-          disabled={isChecking || isDownloading}
-        >
-          {isDownloading ? (
-            <>
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              {t("settings.updating")}
-            </>
-          ) : hasUpdate ? (
-            <>
-              <Download className="h-3.5 w-3.5" />
-              {t("settings.updateTo", {
-                version: updateInfo?.availableVersion ?? "",
-              })}
-            </>
-          ) : isChecking ? (
-            <>
-              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-              {t("settings.checking")}
-            </>
-          ) : (
-            <>
-              <RefreshCw className="h-3.5 w-3.5" />
-              {t("settings.checkForUpdates")}
-            </>
-          )}
-        </Button>
       </div>
-
-      {hasUpdate && updateInfo && (
-        <div className="space-y-1 px-5 py-4 text-body">
-          <p className="font-medium text-fg-1">
-            {t("settings.updateAvailable", {
-              version: updateInfo.availableVersion,
-            })}
-          </p>
-          {updateInfo.notes && (
-            <p className="line-clamp-3 text-fg-2">{updateInfo.notes}</p>
-          )}
-          {isPortable && (
-            <p className="text-fg-2">{t("settings.portableUpdateHint")}</p>
-          )}
-          {/* 开关开着时说明后台下载到哪一步了，不然看上去和没开一样 */}
-          {autoUpdateEnabled && autoUpdateSupported && !isPortable && (
-            <>
-              {readyUpdate?.version === updateInfo.availableVersion ? (
-                <p className="flex items-center gap-1.5 text-fg-2">
-                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success-text" />
-                  {t("autoUpdate.downloadedInline")}
-                </p>
-              ) : autoUpdateDownloading ? (
-                <p className="flex items-center gap-1.5 text-fg-2">
-                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
-                  {t("autoUpdate.downloadingInline")}
-                </p>
-              ) : null}
-            </>
-          )}
-        </div>
-      )}
-
-      {onAutoSave && (
-        // 关于页的其它行是 px-5，这里用 SettingsRow 对齐（SettingsSwitchRow 固定 px-4）
-        <SettingsRow
-          className="px-5 py-4"
-          label={t("autoUpdate.toggle")}
-          help={{
-            title: t("autoUpdate.toggle"),
-            body: t("autoUpdate.toggleHelp"),
-          }}
-          // 灰掉的开关要写明为什么用不了
-          description={
-            autoUpdateSupported ? undefined : t("autoUpdate.unsupported")
-          }
-          control={
-            <Switch
-              checked={autoUpdateEnabled && autoUpdateSupported}
-              disabled={!autoUpdateSupported}
-              onCheckedChange={(value) => void handleAutoUpdateChange(value)}
-              aria-label={t("autoUpdate.toggle")}
-            />
-          }
-        />
-      )}
 
       <div className="flex flex-wrap items-center gap-2 px-5 py-4">
         {starPromptDismissed && (
@@ -356,15 +160,6 @@ export function AboutSection({
             {t("settings.github")}
           </Button>
         )}
-        <Button
-          type="button"
-          variant="neutral"
-          size="compact"
-          onClick={() => settingsApi.openExternal("https://ccswitch.io")}
-        >
-          <Globe className="h-3.5 w-3.5" />
-          {t("settings.officialWebsite")}
-        </Button>
         <Button
           type="button"
           variant="neutral"
@@ -387,8 +182,7 @@ export function AboutSection({
         )}
       </div>
 
-      {/* 下载与更新都走 ccswitch.io，用户不再经过仓库页，邀 Star 单独占一行；按钮即 GitHub 入口。
-          关掉后链接行补回 GitHub 按钮 */}
+      {/* 邀 Star 单独占一行；按钮即 GitHub 入口，关掉后链接行补回 GitHub 按钮 */}
       {!starPromptDismissed && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-3 bg-action-soft py-3.5 ps-5 pe-3">
           <div className="flex min-w-0 flex-1 items-center gap-3">
